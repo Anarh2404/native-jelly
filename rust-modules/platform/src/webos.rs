@@ -288,13 +288,14 @@ pub fn poll_home() {
     if HOME_MINIMIZE.swap(false, std::sync::atomic::Ordering::AcqRel) { minimize(); }
 }
 
-/// The Home launcher's app id.
+/// The app BACK-at-root hands the screen to.
 ///
-/// Community tier (webosbrew's commands cheatsheet and the widely copied
-/// `luna-send … /launch '{"id":"com.webos.app.home"}'` recipe), which is why the reply is graded
-/// rather than assumed: a wrong id comes back `returnValue: false` and falls through to the
-/// minimize leg instead of leaving the user on a screen whose BACK did nothing.
-const HOME_APP_ID: &str = "com.webos.app.home";
+/// Fork change: the television's Home launcher, not LG Home. The id below was `com.webos.app.home`
+/// upstream; this fork points the same graded LS2 launch at the TV's home launcher
+/// (`tld.my.nlauncher`). The grading is what makes the retarget safe: a reply without
+/// `returnValue: true` — a missing launcher, a busy sam — falls through to the minimize leg
+/// instead of leaving the user on a screen whose BACK did nothing.
+const HOME_APP_ID: &str = "tld.my.nlauncher";
 
 #[cfg(any(feature = "hostsim", test, feature = "test-support"))]
 fn launch_home() -> bool {
