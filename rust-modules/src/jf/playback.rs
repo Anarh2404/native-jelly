@@ -469,6 +469,19 @@ fn audio_reason(r: &str) -> bool {
     r.starts_with("Audio") || r == "SecondaryAudioNotSupported"
 }
 
+/// Whether the server may still COPY the video under the URL's `VideoBitrate`. No reason says so:
+/// a source over the ceiling is answered `ContainerBitrateExceedsLimit` alone, and the stream
+/// endpoint then refuses the copy in `EncodingHelper.CanStreamCopyVideo` (12.4: "Video bitrate must
+/// fall within requested value" — a stream whose bitrate is unknown or above the request is
+/// re-encoded). Missing that sent a 4K HEVC remux over an Auto ceiling to a pipeline loaded for
+/// HEVC while the server encoded H.264 (live 12.4, 2026-10-29).
+fn video_bitrate_admits_copy(url: &str, v: Option<&MediaStream>) -> bool {
+    match query_param(url, "VideoBitrate").and_then(|b| b.parse::<i64>().ok()) {
+        None => true,
+        Some(limit) => v.and_then(|s| s.bit_rate).is_some_and(|rate| rate <= limit),
+    }
+}
+
 /// The selected source stream of `kind` (`Video`/`Audio`): the explicit index, else the
 /// source's default, else the first of that type.
 fn pick<'a>(src: &'a MediaSourceInfo, kind: &str, index: Option<i64>) -> Option<&'a MediaStream> {
@@ -808,7 +821,8 @@ impl Jf<'_> {
             (PlayMethod::DirectPlay, path, lane(v), lane(a))
         } else if let Some(mut url) = src.transcoding_url.clone().filter(|u| !u.is_empty()) {
             reasons = transcode_reasons(&url);
-            let video_copy = ask.video_copy && !reasons.iter().any(|r| video_reason(r));
+            let video_copy =
+                ask.video_copy && !reasons.iter().any(|r| video_reason(r)) && video_bitrate_admits_copy(&url, v);
             let audio_copy = !reasons.iter().any(|r| audio_reason(r));
             // An HLS master lists the whole film from zero and the player starts on the segment
             // covering the offset; the server refuses a segment request carrying StartTimeTicks.
@@ -1401,6 +1415,22 @@ mod tests {
         assert_eq!(lane_codec(url, "AudioCodec", Some(&a), true), "ac3", "a codec off the list cannot be copied");
         let dts = MediaStream { kind: "Audio".into(), codec: Some("dts".into()), ..Default::default() };
         assert_eq!(lane_codec("/x?AudioCodec=dts", "AudioCodec", Some(&dts), true), "dca", "the app's spelling");
+    }
+
+    /// The bitrate rule of `CanStreamCopyVideo`: the URL's `VideoBitrate` bounds the copy, an
+    /// unknown stream bitrate fails it, and no `VideoBitrate` leaves the copy to the reasons.
+    #[test]
+    fn a_video_over_the_requested_bitrate_is_not_copied() {
+        let url = "/videos/x/stream.mkv?VideoCodec=h264,hevc,vp9,av1&VideoBitrate=77242000&TranscodeReasons=ContainerBitrateExceedsLimit";
+        let hevc = |bit_rate| MediaStream { kind: "Video".into(), codec: Some("hevc".into()), bit_rate, ..Default::default() };
+        assert!(!video_bitrate_admits_copy(url, Some(&hevc(Some(84_130_112)))));
+        assert!(video_bitrate_admits_copy(url, Some(&hevc(Some(77_242_000)))), "equal is within");
+        assert!(video_bitrate_admits_copy(url, Some(&hevc(Some(40_000_000)))));
+        assert!(!video_bitrate_admits_copy(url, Some(&hevc(None))), "unknown is refused");
+        assert!(video_bitrate_admits_copy("/videos/x/stream.mkv?VideoCodec=hevc", Some(&hevc(None))));
+        assert!(!transcode_reasons(url).iter().any(|r| video_reason(r)), "no reason names the video");
+        let copied = video_bitrate_admits_copy(url, Some(&hevc(Some(84_130_112))));
+        assert_eq!(lane_codec(url, "VideoCodec", Some(&hevc(Some(84_130_112))), copied), "h264");
     }
 
     /// The server moves codecs it will not pick to the end of the list before taking the head
