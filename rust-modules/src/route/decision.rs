@@ -5802,15 +5802,34 @@ pub(super) fn auto_bitrate_kbps(client: &crate::catalog::Client) -> Option<i64> 
         }
     };
     let measured = sample.kbps();
-    let kbps = measured.saturating_mul(7) / 10;
+    let in_network = client.endpoint_in_network();
+    let kbps = auto_ceiling_kbps(measured, in_network);
     crate::player::log(&format!(
-        "auto: bitrate test {}KiB/{}ms measured={measured}kbps -> MaxStreamingBitrate {kbps}kbps",
+        "auto: bitrate test {}KiB/{}ms measured={measured}kbps in_network={} -> MaxStreamingBitrate {kbps}kbps",
         sample.bytes / 1024,
         sample.elapsed.as_millis(),
+        in_network.map_or("unknown", |b| if b { "true" } else { "false" }),
     ));
     let kbps = i64::try_from(kbps).unwrap_or(i64::MAX);
     *AUTO_BITRATE.lock().unwrap_or_else(|e| e.into_inner()) = Some((client.id(), now, kbps));
     Some(kbps)
+}
+
+/// jellyfin-web's `LAN_BITRATE` (`src/utils/bitrateTest.ts`): the least Auto asks for when the
+/// server counts the client as on its LAN.
+const LAN_FLOOR_KBPS: u64 = 140_000;
+
+/// 70% of the measurement, raised to [`LAN_FLOOR_KBPS`] when the server says `IsInNetwork` — the
+/// web client's `Math.max(result, LAN_BITRATE)`. Without the floor one 500 KB sample, dominated by
+/// the response's first-byte latency, capped a LAN at 77 Mbit/s and turned an 84 Mbit/s 4K remux
+/// into a re-encode (live 12.4, 2026-10-29).
+fn auto_ceiling_kbps(measured: u64, in_network: Option<bool>) -> u64 {
+    let kbps = measured.saturating_mul(7) / 10;
+    if in_network == Some(true) {
+        kbps.max(LAN_FLOOR_KBPS)
+    } else {
+        kbps
+    }
 }
 
 /// The last Auto measurement: a server slot's sample stays good for a minute.

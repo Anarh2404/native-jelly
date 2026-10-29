@@ -2075,3 +2075,14 @@ fn manual_original_after_a_fixed_rung_with_a_subtitle_returns_to_direct_play() {
     crate::player::reset_audio_track();
     crate::player::reset_subtitle();
 }
+
+/// Auto's ceiling is 70% of the sample, and never under the web client's LAN floor when the
+/// server says the client is on its network; a `false` or unanswered endpoint keeps the sample.
+#[test]
+fn auto_ceiling_honours_the_lan_floor_only_in_network() {
+    assert_eq!(auto_ceiling_kbps(110_987, Some(true)), 140_000);
+    assert_eq!(auto_ceiling_kbps(110_987, Some(false)), 77_690);
+    assert_eq!(auto_ceiling_kbps(110_987, None), 77_690);
+    assert_eq!(auto_ceiling_kbps(400_000, Some(true)), 280_000, "a faster sample stays above the floor");
+    assert_eq!(auto_ceiling_kbps(u64::MAX, Some(true)), u64::MAX / 10, "saturates, never wraps");
+}

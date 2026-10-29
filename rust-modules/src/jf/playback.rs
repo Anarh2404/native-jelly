@@ -963,6 +963,12 @@ impl Jf<'_> {
         StreamUrl { origin: self.origin().clone(), path: super::url::with_api_key(&path, &self.token()) }
     }
 
+    /// `GET /System/Endpoint`'s `IsInNetwork`: whether the server counts this client's address as
+    /// its LAN (`NetworkManager.IsInLocalNetwork`). `None` when the server did not answer.
+    pub fn endpoint_in_network(&self) -> Option<bool> {
+        self.get::<EndPointInfo>("/System/Endpoint").map(|e| e.is_in_network)
+    }
+
     /// End the server's encoder for `session` — the one a seek, a track switch or a quality change
     /// replaced, or one a refused plan started — with `DELETE /Videos/ActiveEncodings`, the call the
     /// web client's `stopActiveEncodings` makes. The route is real on 10.10 through 12 but hidden

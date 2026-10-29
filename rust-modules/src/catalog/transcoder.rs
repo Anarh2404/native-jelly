@@ -147,6 +147,12 @@ impl Client {
         self.jf().map(|j| j.bitrate_test_url(bytes))
     }
 
+    /// Whether the server counts this client as on its LAN (`/System/Endpoint`); `None` when it
+    /// did not say or this is not a Jellyfin server.
+    pub fn endpoint_in_network(&self) -> Option<bool> {
+        self.jf()?.endpoint_in_network()
+    }
+
     /// The signed-in user's audio/subtitle language preferences.
     pub fn language_prefs(&self) -> Option<LanguagePrefs> {
         self.jf()?.language_prefs()
