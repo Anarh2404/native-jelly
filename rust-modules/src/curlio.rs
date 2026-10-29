@@ -1558,6 +1558,9 @@ pub(crate) struct ThroughputSample {
     pub(crate) bytes: u64,
     pub(crate) elapsed: std::time::Duration,
     pub(crate) target_reached: bool,
+    /// `(bytes, elapsed)` at the first read past the caller's settle offset, when one was asked
+    /// for and reached — the point [`Self::steady_kbps`] measures from.
+    pub(crate) settled: Option<(u64, std::time::Duration)>,
 }
 
 /// Why a bounded source measurement did not produce even one body byte.  Keeping the setup
@@ -1575,6 +1578,20 @@ impl ThroughputSample {
     pub(crate) fn kbps(self) -> u64 {
         let us = self.elapsed.as_micros().max(1);
         ((u128::from(self.bytes) * 8 * 1_000) / us).min(u128::from(u64::MAX)) as u64
+    }
+
+    /// The rate after the settle checkpoint, so a connection's TCP ramp-up is not averaged in:
+    /// measured from the television, a 512 KiB body read 78 Mbit/s on a link that carried a
+    /// 64 MiB one at 253. [`Self::kbps`] when there is no checkpoint or nothing after it — the
+    /// whole body landed before the offset, which only a link far faster than any ceiling does.
+    pub(crate) fn steady_kbps(self) -> u64 {
+        match self.settled {
+            Some((b0, t0)) if self.bytes > b0 && self.elapsed > t0 => {
+                let us = (self.elapsed - t0).as_micros().max(1);
+                ((u128::from(self.bytes - b0) * 8 * 1_000) / us).min(u128::from(u64::MAX)) as u64
+            }
+            _ => self.kbps(),
+        }
     }
 }
 
@@ -1599,21 +1616,23 @@ pub(crate) fn sample_throughput_result(
 ) -> Result<ThroughputSample, ThroughputFailure> {
     let setup_deadline = sample_setup_deadline(target_bytes, setup_budget, body_budget)?;
     let reservation = OpenReservation::private().ok_or(ThroughputFailure::Open(OpenErr::Local))?;
-    sample_throughput_with_reservation(url, target_bytes, Span::Ranged, setup_deadline, body_budget, reservation)
+    sample_throughput_with_reservation(url, target_bytes, Span::Ranged, setup_deadline, body_budget, None, reservation)
 }
 
 /// [`sample_throughput_result`] for a resource that IS the sample — a server's own bitrate-test
 /// payload, sized by its URL. Asks for the whole body: such an endpoint answers a Range with a
-/// 200, which the ranged form must refuse as a server that ignores byte ranges.
+/// 200, which the ranged form must refuse as a server that ignores byte ranges. `settle` marks the
+/// body offset [`ThroughputSample::steady_kbps`] measures from.
 pub(crate) fn sample_whole_throughput_result(
     url: &str,
     target_bytes: usize,
     setup_budget: std::time::Duration,
     body_budget: std::time::Duration,
+    settle: std::time::Duration,
 ) -> Result<ThroughputSample, ThroughputFailure> {
     let setup_deadline = sample_setup_deadline(target_bytes, setup_budget, body_budget)?;
     let reservation = OpenReservation::private().ok_or(ThroughputFailure::Open(OpenErr::Local))?;
-    sample_throughput_with_reservation(url, target_bytes, Span::Whole, setup_deadline, body_budget, reservation)
+    sample_throughput_with_reservation(url, target_bytes, Span::Whole, setup_deadline, body_budget, Some(settle), reservation)
 }
 
 /// Whether a throughput sample asks for its bytes as a finite Range or as the whole body.
@@ -1645,7 +1664,7 @@ where
     if cancelled() {
         return Err(ThroughputFailure::Open(OpenErr::Aborted));
     }
-    sample_throughput_with_reservation(url, target_bytes, Span::Ranged, setup_deadline, body_budget, reservation)
+    sample_throughput_with_reservation(url, target_bytes, Span::Ranged, setup_deadline, body_budget, None, reservation)
 }
 
 fn sample_setup_deadline(
@@ -1667,6 +1686,7 @@ fn sample_throughput_with_reservation(
     span: Span,
     setup_deadline: std::time::Instant,
     body_budget: std::time::Duration,
+    settle: Option<std::time::Duration>,
     reservation: OpenReservation,
 ) -> Result<ThroughputSample, ThroughputFailure> {
     let mut src = match span {
@@ -1691,6 +1711,7 @@ fn sample_throughput_with_reservation(
         .ok_or(ThroughputFailure::Open(OpenErr::Local))?;
     let mut bytes = 0usize;
     let mut last_read = 0;
+    let mut settled = None;
     let mut chunk = [0u8; 64 * 1024];
     while bytes < target_bytes {
         let want = chunk.len().min(target_bytes - bytes);
@@ -1700,6 +1721,12 @@ fn sample_throughput_with_reservation(
             break;
         }
         bytes = bytes.saturating_add(n as usize);
+        if settled.is_none() {
+            let at = started.elapsed();
+            if settle.is_some_and(|s| at >= s) {
+                settled = Some((bytes as u64, at));
+            }
+        }
     }
     if bytes == 0 {
         return Err(if std::time::Instant::now() >= body_deadline {
@@ -1718,6 +1745,7 @@ fn sample_throughput_with_reservation(
         bytes: bytes as u64,
         elapsed: started.elapsed(),
         target_reached: bytes >= target_bytes,
+        settled,
     })
 }
 
@@ -2596,6 +2624,64 @@ mod tests {
             assert!(sample.target_reached);
             assert_eq!(sample.bytes, BODY.len() as u64);
         });
+    }
+
+    /// The steady rate counts only what follows the checkpoint, and falls back to the whole
+    /// average when there is no checkpoint or nothing after it.
+    #[test]
+    fn steady_rate_excludes_the_bytes_before_the_settle_checkpoint() {
+        let ms = std::time::Duration::from_millis;
+        let sample = |bytes, elapsed, settled| ThroughputSample { bytes, elapsed, target_reached: false, settled };
+        // 125 000 B in the first 200 ms (5 Mbit/s), 3 750 000 B in the next 400 ms (75 Mbit/s).
+        let ramp = sample(3_875_000, ms(600), Some((125_000, ms(200))));
+        assert_eq!(ramp.kbps(), 51_666);
+        assert_eq!(ramp.steady_kbps(), 75_000);
+        assert_eq!(sample(3_875_000, ms(600), None).steady_kbps(), 51_666, "no checkpoint");
+        assert_eq!(sample(125_000, ms(200), Some((125_000, ms(200)))).steady_kbps(), 5_000, "nothing after it");
+    }
+
+    /// Through the real sampler: a body that starts slowly and then speeds up, as a fresh TCP
+    /// connection does, is reported at its later rate once a settle offset is asked for — the
+    /// checkpoint is set by the read loop, not only by the arithmetic above.
+    #[test]
+    fn a_settled_sample_reports_the_rate_after_the_ramp() {
+        let Some(_gate) = curl_gate() else { return };
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut req = [0u8; 4096];
+            let _ = std::io::Read::read(&mut socket, &mut req);
+            let _ = write!(socket, "HTTP/1.1 200 OK\r\nContent-Length: 67108864\r\nConnection: close\r\n\r\n");
+            let started = std::time::Instant::now();
+            let chunk = [0x55u8; 64 * 1024];
+            // ~1.6 Mbit/s for 250 ms, then up to ~500 Mbit/s; ends when the client hangs up.
+            loop {
+                let slow = started.elapsed() < std::time::Duration::from_millis(250);
+                let k = if slow { 2_000 } else { chunk.len() };
+                if socket.write_all(&chunk[..k]).is_err() {
+                    break;
+                }
+                // Paced in both phases so loopback cannot finish the 64 MiB body inside the window.
+                std::thread::sleep(std::time::Duration::from_millis(if slow { 10 } else { 1 }));
+            }
+        });
+        let sample = sample_whole_throughput_result(
+            &format!("http://127.0.0.1:{port}/Playback/BitrateTest"),
+            64 << 20,
+            std::time::Duration::from_secs(2),
+            std::time::Duration::from_millis(600),
+            std::time::Duration::from_millis(300),
+        )
+        .expect("a sample");
+        server.join().unwrap();
+        assert!(sample.settled.is_some(), "the read loop records the checkpoint: {sample:?}");
+        assert!(
+            sample.steady_kbps() > sample.kbps(),
+            "the ramp is excluded: steady {} vs whole {}",
+            sample.steady_kbps(),
+            sample.kbps(),
+        );
     }
 
     /// Runtime Original sampling runs synchronously on the demux worker.  If it used the cold

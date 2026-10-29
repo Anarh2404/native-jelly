@@ -19,14 +19,6 @@ pub struct PublicSystemInfo {
     pub startup_wizard_completed: bool,
 }
 
-/// `GET /System/Endpoint` — how the server classifies this client's address.
-#[derive(Debug, Default, Clone, Deserialize)]
-#[serde(default, rename_all = "PascalCase")]
-pub struct EndPointInfo {
-    pub is_local: bool,
-    pub is_in_network: bool,
-}
-
 /// `{Items, TotalRecordCount, StartIndex}` — every list endpoint.
 #[derive(Debug, Default, Clone, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
