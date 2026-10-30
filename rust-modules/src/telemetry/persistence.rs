@@ -1085,7 +1085,7 @@ mod tests {
         let fixture = Fixture::new("migration");
         let source = legacy_path(&fixture, "telemetry.json");
         let bytes = serde_json::to_vec(&old_yes()).unwrap();
-        std::fs::write(&source, &bytes).unwrap();
+        nj_base::paths::write_private_test_file(&source, &bytes);
         let loaded = load(std::slice::from_ref(&source));
         assert_eq!(
             loaded.errors_id.as_deref(),

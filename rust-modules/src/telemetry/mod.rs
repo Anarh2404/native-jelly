@@ -585,18 +585,17 @@ mod tests {
         let _g = nj_base::testlock::serial();
         let dir = std::env::temp_dir().join(format!("nativejelly-consent-upgrade-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        nj_base::paths::create_private_test_dir(&dir);
         let saved = consent::current();
         let legacy = dir.join("telemetry.json");
         redirect_for_test(Some(legacy.clone()));
         spool::set_test_path(Some(dir.join("spool.jsonl")));
         nj_base::paths::redirect_persistent_state_root_for_test(Some(dir.clone()));
 
-        std::fs::write(
-            dir.join("consent.json"),
+        nj_base::paths::write_private_test_file(
+            &dir.join("consent.json"),
             include_str!("../../../tests/fixtures/persistence/generated/v0.6.6-json-store/consent.json"),
-        )
-        .unwrap();
+        );
         let from_066 = serde_json::to_value(load_from(std::slice::from_ref(&legacy))).unwrap();
         assert_eq!(
             (&from_066["errors"], &from_066["errors_id"], &from_066["errors_declined_scope"]),
@@ -605,11 +604,10 @@ mod tests {
         );
 
         std::fs::remove_file(dir.join("consent.json")).unwrap();
-        std::fs::write(
+        nj_base::paths::write_private_test_file(
             &legacy,
             include_str!("../../../tests/fixtures/persistence/generated/v0.6.5-errors-yes-declined-extension.consent.json"),
-        )
-        .unwrap();
+        );
         let prev = load_from(std::slice::from_ref(&legacy));
         record(consent::apply(&prev, true, false, || None));
         let after = serde_json::to_value(load_from(std::slice::from_ref(&legacy))).unwrap();

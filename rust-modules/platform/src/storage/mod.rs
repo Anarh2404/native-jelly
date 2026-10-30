@@ -965,7 +965,7 @@ mod tests {
                 std::process::id(),
                 rand_suffix()
             ));
-            std::fs::create_dir(&p).unwrap();
+            std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700).create(&p).unwrap();
             std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o700)).unwrap();
             Self(p, serial)
         }
@@ -994,8 +994,8 @@ mod tests {
         let d = Scratch::new();
         let root = d.0.join("state");
         let elsewhere = d.0.join("elsewhere");
-        std::fs::create_dir(&root).unwrap();
-        std::fs::create_dir(&elsewhere).unwrap();
+        std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700).create(&root).unwrap();
+        std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700).create(&elsewhere).unwrap();
         let store = JsonStore::new(root.clone()).unwrap();
         std::fs::rename(&root, d.0.join("old-state")).unwrap();
         symlink(&elsewhere, &root).unwrap();
@@ -1010,8 +1010,8 @@ mod tests {
         let d = Scratch::new();
         let root = d.0.join("state");
         let elsewhere = d.0.join("elsewhere");
-        std::fs::create_dir(&root).unwrap();
-        std::fs::create_dir(&elsewhere).unwrap();
+        std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700).create(&root).unwrap();
+        std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700).create(&elsewhere).unwrap();
         let store = JsonStore::new(root.clone()).unwrap();
         std::fs::rename(&root, d.0.join("old-state")).unwrap();
         symlink(&elsewhere, &root).unwrap();
@@ -1041,9 +1041,9 @@ mod tests {
     fn schema_and_domain_failures_are_distinct() {
         let d = Scratch::new();
         let s = JsonStore::new(d.0.clone()).unwrap();
-        std::fs::write(d.0.join("session.json"), br#"{"format":"other"}"#).unwrap();
+        nj_base::paths::write_private_test_file(&d.0.join("session.json"), br#"{"format":"other"}"#);
         assert_eq!(s.load(RecordKey::Session), Err(StoreError::UnknownFormat));
-        std::fs::write(d.0.join("session.json"), br#"{"format":"nativejelly-record","version":1,"domain":"consent","key":"session","revision":1,"state":"Cleared"}"#).unwrap();
+        nj_base::paths::write_private_test_file(&d.0.join("session.json"), br#"{"format":"nativejelly-record","version":1,"domain":"consent","key":"session","revision":1,"state":"Cleared"}"#);
         assert_eq!(
             s.load(RecordKey::Session),
             Err(StoreError::DomainKeyMismatch)

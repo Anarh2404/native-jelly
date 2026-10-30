@@ -1150,10 +1150,35 @@ pub fn test_default_persistent_state_root() -> PathBuf {
         let dir = std::env::temp_dir()
             .join(format!("nativejelly-persistent-state-fallback-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let _ = std::fs::create_dir_all(&dir);
+        create_private_test_dir(&dir);
         dir
     })
     .clone()
+}
+
+/// Create a test state root owner-only, as `ensure_persistent_state_root` does in production. Plain
+/// `create_dir_all` inherits the process umask, and storage rightly refuses the group-writable
+/// root a `umask 0002` shell would leave.
+#[cfg(any(test, feature = "test-support"))]
+pub fn create_private_test_dir(dir: &Path) {
+    let _ = std::fs::create_dir_all(dir);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+    }
+}
+
+/// Write a fixture record owner-only, as the app that wrote the real one did: a group-writable
+/// record is untrusted by design, so its mode cannot be left to the umask running the suite.
+#[cfg(any(test, feature = "test-support"))]
+pub fn write_private_test_file(path: &Path, bytes: impl AsRef<[u8]>) {
+    std::fs::write(path, bytes).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -1163,7 +1188,7 @@ static TEST_PERSISTENT_STATE_ROOT: std::sync::Mutex<Option<PathBuf>> = std::sync
 #[allow(dead_code)] // Stage A storage root; connected by Session/Consent integration.
 pub fn redirect_persistent_state_root_for_test(root: Option<PathBuf>) {
     if let Some(root) = &root {
-        let _ = std::fs::create_dir_all(root);
+        create_private_test_dir(root);
     }
     *TEST_PERSISTENT_STATE_ROOT
         .lock()

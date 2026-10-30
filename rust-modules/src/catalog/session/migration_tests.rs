@@ -367,7 +367,7 @@ impl LegacyFile {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("auth.json");
-        std::fs::write(&path, value.to_string()).unwrap();
+        nj_base::paths::write_private_test_file(&path, value.to_string());
         Self { dir, path }
     }
 }
@@ -390,7 +390,6 @@ impl TempCanonicalState {
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
         nj_base::paths::redirect_persistent_state_root_for_test(Some(dir.clone()));
         Self { dir }
     }
@@ -1200,11 +1199,10 @@ mod published_06 {
     fn a_066_host_store_session_record_reopens_on_host() {
         let _serial = nj_base::testlock::serial();
         let state = TempCanonicalState::new("json-066");
-        std::fs::write(
-            state.dir.join("session.json"),
+        nj_base::paths::write_private_test_file(
+            &state.dir.join("session.json"),
             include_str!("../../../../tests/fixtures/persistence/generated/v0.6.6-json-store/session.json"),
-        )
-        .unwrap();
+        );
         let CanonicalRead::Data { payload, .. } = persistence::load() else {
             panic!("0.6.6 host record did not load")
         };
