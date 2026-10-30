@@ -194,6 +194,9 @@ pub(crate) unsafe fn run(app: &mut App) {
         // A timed-out native Load parked by teardown is released here, on the main thread, the
         // first frame after its media thread returns (`player::engine::AbandonedLoad`).
         crate::player::engine::reap_abandoned_load(&mut app.adapters.player);
+        // …and a real stop's off-frame `Unload` gets its main-thread tail (gate, epoch, ACB, D1)
+        // the first frame after it returns (`player::engine::PendingRelease`).
+        app.adapters.player.poll_release();
         app.player.session.repair_status = app.player.repair.state();
         app.bridge.publish_playback(&app.player.session, was_player);
         // The container runs its frame: the pending navigation's commit (at `PageDip`'s floor),
@@ -2856,6 +2859,9 @@ pub(crate) unsafe fn shutdown(
     // resume point the user just earned is silently dropped. Same cost the old inline call
     // paid, except now it is paid once at exit instead of on every BACK out of a movie.
     crate::route::drain_scrobble();
+    // The stop's `Unload` runs off-frame; the process must not exit inside it, nor with the object
+    // it is releasing left undestroyed.
+    pa.finish_release();
     crate::capture::shutdown();
     crate::app::adapters::poster::shutdown();
     SDL_Quit();
