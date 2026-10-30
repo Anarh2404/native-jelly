@@ -93,14 +93,14 @@ fn live_sections_page_sort_and_filter() {
     let bytes = c.fetch_built(&img).expect("poster bytes");
     assert!(bytes.len() > 1000);
 
-    let genres = c.section_directory(movies, "genre", None).expect("genres");
+    let genres = c.section_directory(movies, "genre", None, &[]).expect("genres");
     eprintln!("genres: {}", genres.directory.len());
     if let Some(g) = genres.directory.first() {
         let f = vec![("genre".to_string(), g.key.clone())];
         let p = j.section_page(&SectionQuery { section_key: movies, sort: "titleSort", filters: &f, start: 0, size: 50, include_meta: false }).expect("genre page");
         assert!(p.total <= page.total);
     }
-    let letters = c.section_directory(movies, "firstCharacter", None).expect("letters");
+    let letters = c.section_directory(movies, "firstCharacter", None, &[]).expect("letters");
     let n: i64 = letters.directory.iter().map(|d| d.size).sum();
     assert_eq!(n, page.total, "the letter index covers the whole library");
 }

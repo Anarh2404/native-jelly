@@ -118,16 +118,22 @@ impl Client {
     /// → `.directory[]`.
     /// `metadata_type` scopes genre values and letter counts to the same flat listing as
     /// `/all?type=`. Without it a TV library's counts describe shows even in episode view.
+    /// `filters` are the listing's own terms: letter counts are the offsets the rail jumps to, so they
+    /// have to count what the grid lists. Empty for a directory that does not depend on them.
     pub fn section_directory(
         &self,
         section_key: i64,
         directory: &str,
         metadata_type: Option<i64>,
+        filters: &[(String, String)],
     ) -> Option<MediaContainer> {
-        if let Some(j) = self.jf() { return j.section_directory(section_key, directory, metadata_type); }
+        if let Some(j) = self.jf() { return j.section_directory(section_key, directory, metadata_type, filters); }
         let mut query = QueryBuilder::new(format!("/library/sections/{section_key}/{directory}"));
         if let Some(metadata_type) = metadata_type {
             query = query.int("type", metadata_type);
+        }
+        for (term, value) in filters {
+            query = query.str(term, value);
         }
         self.get_json(&query.build())
     }

@@ -495,9 +495,12 @@ struct SecState {
     genres: Arc<Vec<GenreEntry>>,
     genres_done: bool, // a genre fetch LANDED (even empty) — kick_genres won't re-spawn
     /// per-letter (label, count) in titleSort order, from `/firstCharacter` — the letter rail.
-    /// Counts describe the UNFILTERED title listing, so the rail only shows in that state.
+    /// The counts are the offsets a letter jumps to, so they mean something only for the listing
+    /// they counted ([`letters_for`](Self::letters_for)); otherwise the rail is not offered.
     letters: Arc<Vec<(String, i64)>>,
     letters_done: bool,
+    /// What [`letters`](Self::letters) counted. Default: the unfiltered listing.
+    letters_for: LettersKey,
     /// **The library's OWN shelves** — `Library Recommended`, as its server's owner arranged it.
     /// A field here rather than a store of its own because this struct is already the per-section
     /// aggregate; `section_hubs`' module doc argues it, and `reset()` clearing it on a profile
@@ -511,6 +514,13 @@ struct SecState {
     /// The server's library changed while a reader was on this grid: its pages are forgotten when
     /// they leave it, not under them (`BrowseState::listings_changed`).
     listing_stale: bool,
+}
+
+/// The filters a set of letter counts was asked under.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct LettersKey {
+    unwatched: bool,
+    genre: Option<String>,
 }
 
 /// A section's items, CHUNKED BY PAGE (restructure phase 4, the O(result) rule of spec §5.2 —
@@ -636,6 +646,7 @@ impl Default for SecState {
             genres_done: false,
             letters: Arc::default(),
             letters_done: false,
+            letters_for: LettersKey::default(),
             hubs: Default::default(),
             fetch: SecFetch::Loading,
             total: -1,
@@ -656,6 +667,19 @@ impl SecState {
         self.letters = Arc::new(Vec::new());
         self.letters_done = false;
         self.listing_stale = false;
+    }
+
+    /// The filters as applied now: a type the filters do not apply to lists unfiltered.
+    fn letters_key(&self) -> LettersKey {
+        if !self.library_type.filters() {
+            return LettersKey::default();
+        }
+        LettersKey { unwatched: self.unwatched, genre: self.genre.as_ref().map(|g| g.id.clone()) }
+    }
+
+    /// The letters, only while they describe the listing on screen.
+    fn live_letters(&self) -> Arc<Vec<(String, i64)>> {
+        if self.letters_for == self.letters_key() { self.letters.clone() } else { Arc::default() }
     }
 
     fn query_filters(&self, section_kind: SecKind) -> Vec<(String, String)> {
@@ -1257,6 +1281,7 @@ impl BrowseState {
         mail: fn(&BrowseAdapter) -> &Mutex<Option<DirectoryResult<T>>>,
         dir: &'static str,
         project: fn(&crate::catalog::LibrarySection) -> Option<T>,
+        filtered: bool,
     ) {
         let current = self.cur();
         if self.states.get(current).is_none() || done {
@@ -1276,11 +1301,18 @@ impl BrowseState {
         let library_type = self.states[current].library_type;
         let metadata_type = library_type.plex_type(self.sections[current].kind);
         let epoch = self.table_epoch();
+        let asked = self.states[current].letters_key();
+        let filters: Vec<(String, String)> = if filtered {
+            self.states[current].query_filters(self.sections[current].kind)
+                .into_iter().filter(|(term, _)| term != "type").collect()
+        } else {
+            Vec::new()
+        };
         let worker_adapter = Arc::clone(&adapter);
         let spawned = nj_base::task::spawn_small("directory", move || {
             let list = catch_unwind(|| {
                 let mut values = Vec::new();
-                if let Some(container) = client.section_directory(key, dir, metadata_type) {
+                if let Some(container) = client.section_directory(key, dir, metadata_type, &filters) {
                     values.extend(container.directory.iter().filter_map(project));
                 }
                 values
@@ -1292,6 +1324,7 @@ impl BrowseState {
                 client,
                 token_gen,
                 library_type,
+                asked,
                 list,
             });
         });
@@ -1309,12 +1342,13 @@ impl BrowseState {
                 id: directory.key.clone(),
                 title: directory.title.clone(),
             })
-        });
+        }, false);
     }
     fn kick_letters(&self, adapter: &Arc<BrowseAdapter>) {
+        // Counts landed for other filters are not done: the listing on screen still has none.
         let done = self
             .cur_state()
-            .map(|state| state.letters_done)
+            .map(|state| state.letters_done && state.letters_for == state.letters_key())
             .unwrap_or(true);
         self.kick_directory(
             adapter,
@@ -1326,6 +1360,7 @@ impl BrowseState {
                 (!directory.key.is_empty() && directory.size > 0)
                     .then(|| (directory.title.clone(), directory.size))
             },
+            true,
         );
     }
     pub(crate) fn addressed_with_adapter(
@@ -1570,7 +1605,7 @@ impl BrowseState {
             Some(sort) => sort.key == "titleSort" && !state.sort_desc,
             None => true,
         };
-        title_asc && !state.unwatched && state.genre.is_none() && state.letters.len() > 1
+        title_asc && state.live_letters().len() > 1
     }
     fn discovery_state(&self) -> SecFetch {
         if !self.sections.is_empty() || self.sources.iter().all(|source| source.sections_done) {
@@ -2211,7 +2246,7 @@ impl BrowseState {
         gate: &nj_machine::landgate::Gate,
         flag: &AtomicBool,
         mail: &Mutex<Option<DirectoryResult<T>>>,
-        apply: impl FnOnce(&mut SecState, Vec<T>),
+        apply: impl FnOnce(&mut SecState, Vec<T>, LettersKey),
     ) -> bool {
         let taken = crate::stores::take_landing(gate, crate::stores::StoreId::Browse, || {
             mail.lock().unwrap_or_else(|e| e.into_inner()).take()
@@ -2222,14 +2257,14 @@ impl BrowseState {
         if result.epoch != self.table_epoch() {
             return false;
         }
-        let DirectoryResult { sec, client, token_gen, library_type, list, .. } = result;
+        let DirectoryResult { sec, client, token_gen, library_type, asked, list, .. } = result;
         crate::catalog::commit_if_current(client.id(), client, token_gen, || {
             if self.section_sid(sec) == Some(client.id()) {
                 if let Some(state) = self.state_mut(sec) {
                     if state.library_type != library_type {
                         return false;
                     }
-                    apply(state, list);
+                    apply(state, list, asked);
                     return true;
                 }
             }
@@ -2244,7 +2279,7 @@ impl BrowseState {
     #[cfg(test)]
     fn land_directory_owned<T>(&mut self, flag: &AtomicBool,
         mail: &Mutex<Option<DirectoryResult<T>>>, apply: impl FnOnce(&mut SecState, Vec<T>)) -> bool {
-        self.land_directory_owned_with_gate(nj_machine::landgate::fixture_gate(), flag, mail, apply)
+        self.land_directory_owned_with_gate(nj_machine::landgate::fixture_gate(), flag, mail, |state, list, _| apply(state, list))
     }
     fn maybe_spawn_owned(&mut self, adapter: &Arc<BrowseAdapter>) {
         if adapter.fetching.load(Ordering::SeqCst) || self.retry_cd > 0 {
@@ -2340,7 +2375,7 @@ impl BrowseState {
         changed |= self.hubs_tick_all(adapter);
         changed |= self.land_directory_owned_with_gate(
             gate,
-            &adapter.genre_fetching, &adapter.genre_result, |state, list| {
+            &adapter.genre_fetching, &adapter.genre_result, |state, list, _| {
             state.genres_done = true;
             if state.genres.is_empty() {
                 state.genres = Arc::new(list);
@@ -2348,11 +2383,10 @@ impl BrowseState {
         });
         changed |= self.land_directory_owned_with_gate(
             gate,
-            &adapter.letters_fetching, &adapter.letter_result, |state, list| {
+            &adapter.letters_fetching, &adapter.letter_result, |state, list, asked| {
                 state.letters_done = true;
-                if state.letters.is_empty() {
-                    state.letters = Arc::new(list);
-                }
+                state.letters_for = asked;
+                state.letters = Arc::new(list);
             });
         let page = crate::stores::take_landing(gate, crate::stores::StoreId::Browse, || {
             adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()).take()
@@ -2605,6 +2639,8 @@ struct DirectoryResult<T> {
     client: &'static crate::catalog::Client,
     token_gen: u32,
     library_type: LibraryType,
+    /// The filters the request went out under, for a list that depends on them.
+    asked: LettersKey,
     list: Vec<T>,
 }
 
@@ -3388,6 +3424,7 @@ pub(crate) fn queue_genre_for_owner_test(
         Some(DirectoryResult {
             epoch: state.table_epoch(), sec, client, token_gen: client.token_gen(),
             library_type: state.states[sec].library_type,
+            asked: LettersKey::default(),
             list: vec![GenreEntry { id: "new".into(), title: "New Genre".into() }],
         });
 }

@@ -241,8 +241,6 @@ impl<'a> ListingView<'a> {
                 .sorts()
                 .get(self.sort_index())
                 .is_none_or(|s| s.key == "titleSort" && !self.sort_desc())
-            && !self.unwatched()
-            && self.genre().is_none()
             && self.letters().len() > 1
     }
     pub(crate) fn letter_start(self, index: usize) -> usize {
@@ -309,7 +307,7 @@ impl super::BrowseState {
                     items: state.items.clone(),
                     sorts: state.sorts.clone(),
                     genres: state.genres.clone(),
-                    letters: state.letters.clone(),
+                    letters: state.live_letters(),
                     sort_idx: state.sort_idx,
                     sort_desc: state.sort_desc,
                     genre: state.genre.clone(),

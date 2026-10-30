@@ -419,17 +419,7 @@ impl<'a> Jf<'a> {
         if jf_type != "BoxSet" {
             b = b.s("ParentId", &section_guid);
         }
-        for (k, v) in q.filters {
-            b = match k.as_str() {
-                "unwatched" | "unwatchedLeaves" if v == "1" => b.s("Filters", "IsUnplayed"),
-                "genre" => match v.parse::<i64>().ok().and_then(ids::guid_of) {
-                    Some(g) => b.s("GenreIds", &g),
-                    None => b.s("Genres", v),
-                },
-                "firstCharacter" => b.s("NameStartsWith", v),
-                _ => b,
-            };
-        }
+        let b = with_listing_filters(b, q.filters);
         let r = self.items(b)?;
         Some(JfPage {
             items: r.items,
@@ -439,7 +429,7 @@ impl<'a> Jf<'a> {
         })
     }
 
-    pub fn section_directory(&self, section_key: i64, directory: &str, metadata_type: Option<i64>) -> Option<MediaContainer> {
+    pub fn section_directory(&self, section_key: i64, directory: &str, metadata_type: Option<i64>, filters: &[(String, String)]) -> Option<MediaContainer> {
         let section_guid = ids::guid_of(section_key)?;
         let jf_type = metadata_type.and_then(convert::jf_type_of_number)
             .unwrap_or_else(|| self.section_type(&section_guid, &[]));
@@ -460,14 +450,15 @@ impl<'a> Jf<'a> {
             "firstCharacter" => {
                 // One sorted read of every name, grouped by its first character — the server's own
                 // SortName order, which is what the grid scrolls through.
-                let r = self.items(Q::new("/Items")
+                // Under the listing's own filters: these counts are the offsets a letter jumps to.
+                let r = self.items(with_listing_filters(Q::new("/Items")
                     .s("ParentId", &section_guid)
                     .s("IncludeItemTypes", jf_type)
                     .b("Recursive", true)
                     .s("SortBy", "SortName")
                     .s("Fields", "SortName")
                     .b("EnableImages", false)
-                    .b("EnableUserData", false))?;
+                    .b("EnableUserData", false), filters))?;
                 let mut out: Vec<LibrarySection> = Vec::new();
                 for it in &r.items {
                     let name = it.sort_name.as_deref().unwrap_or(&it.name);
@@ -859,6 +850,23 @@ fn collection_outcome<T>(status: Option<i32>, page: Option<T>) -> CollectionOutc
         (Some(200..=299), Some(p)) => CollectionOutcome::Ok(p),
         _ => CollectionOutcome::Transport,
     }
+}
+
+/// A listing's filter terms (`SecState::query_filters`), as Jellyfin says them. The grid's page and
+/// its letter counts both pass through here, so they cannot count different things.
+fn with_listing_filters(mut b: Q, filters: &[(String, String)]) -> Q {
+    for (k, v) in filters {
+        b = match k.as_str() {
+            "unwatched" | "unwatchedLeaves" if v == "1" => b.s("Filters", "IsUnplayed"),
+            "genre" => match v.parse::<i64>().ok().and_then(ids::guid_of) {
+                Some(g) => b.s("GenreIds", &g),
+                None => b.s("Genres", v),
+            },
+            "firstCharacter" => b.s("NameStartsWith", v),
+            _ => b,
+        };
+    }
+    b
 }
 
 fn provider_key(scheme: &str) -> &'static str {

@@ -3,6 +3,60 @@
 mod tests {
     use super::super::*;
 
+    /// Under a filter the rail needs counts of the filtered listing: the unfiltered ones would jump
+    /// to the wrong rows, so they are not offered, and a landing for the wrong filters is not "done".
+    #[test]
+    fn the_letter_rail_follows_the_filters_it_counted() {
+        let _guard = nj_base::testlock::serial();
+        let mut state = BrowseState::default();
+        seed_two_source_table_for_owner_test(&mut state);
+        let current = state.cur();
+        let st = state.state_mut(current).unwrap();
+        st.letters = Arc::new(vec![("A".into(), 3), ("B".into(), 4)]);
+        st.letters_done = true;
+        assert!(state.rail_available(), "unfiltered counts describe the unfiltered listing");
+
+        state.set_unwatched(true);
+        assert!(!state.rail_available(), "they do not describe the filtered one");
+        assert!(state.listing_snapshot().view().letters().is_empty());
+
+        // The answer for these filters lands, as the landing records it.
+        let key = state.cur_state().unwrap().letters_key();
+        assert!(key.unwatched);
+        let st = state.state_mut(current).unwrap();
+        st.letters_for = key;
+        st.letters = Arc::new(vec![("A".into(), 1), ("C".into(), 2)]);
+        assert!(state.rail_available(), "the rail stays under Unwatched");
+        let snapshot = state.listing_snapshot();
+        assert_eq!(snapshot.view().letter_start(1), 1);
+
+        state.set_unwatched(false);
+        assert!(!state.rail_available(), "turning it off owes the unfiltered counts again");
+        let st = state.cur_state().unwrap();
+        assert_ne!(st.letters_for, st.letters_key());
+    }
+
+    /// The counts go out under the listing's own terms, or they would be offsets into another list.
+    #[test]
+    #[cfg(feature = "devtriggers")]
+    fn letter_counts_are_asked_under_the_listings_filters() {
+        let _guard = nj_base::testlock::serial();
+        assert!(nj_net::net::global_init());
+        fn answer(path: &str) -> String {
+            if path.starts_with("/Items?") {
+                return r#"{"Items":[{"Id":"cccccccccccccccccccccccccccccccc","Name":"Alpha","SortName":"alpha"}],"TotalRecordCount":1}"#.into();
+            }
+            "{}".into()
+        }
+        let server = crate::catalog::rendezvous_test_support::Rendezvous::start(&[], answer);
+        let client = crate::catalog::client_for(server.sid).unwrap();
+        let section = crate::jf::ids::intern("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let terms = [("unwatched".to_string(), "1".to_string())];
+        let letters = client.section_directory(section, "firstCharacter", Some(1), &terms).expect("an answer");
+        assert_eq!(letters.directory[0].size, 1);
+        assert!(server.seen().iter().any(|p| p.starts_with("/Items?") && p.contains("Filters=IsUnplayed")), "{:?}", server.seen());
+    }
+
     fn table_with_every_section_loaded() -> BrowseState {
         let mut state = BrowseState::default();
         let a = crate::catalog::register_for_test("poll-a", "10.0.0.1", 8096, "tok", "cid-a");
@@ -186,7 +240,7 @@ mod tests {
         assert!(browse.state.set_library_type(LibraryType::Episodes));
         let mail = Mutex::new(Some(DirectoryResult {
             epoch: browse.state.table_epoch(), sec: 0, client, token_gen: client.token_gen(),
-            library_type: captured_type, list: vec![("S".into(), 99)],
+            library_type: captured_type, asked: Default::default(), list: vec![("S".into(), 99)],
         }));
         let fetching = AtomicBool::new(true);
         assert!(!browse.state.land_directory_owned(&fetching, &mail, |state, list| {
@@ -245,7 +299,7 @@ mod tests {
         assert_eq!(descending, "show.titleSort:desc,episode.index");
         let reversed = SectionQuery { start: 0, sort: &descending, ..next };
         assert_eq!(fetch_listing_page(client, sid, &reversed, true, None).items[0].rk, "91");
-        assert_eq!(client.section_directory(2, "firstCharacter", Some(4)).unwrap().directory[0].size, 121);
+        assert_eq!(client.section_directory(2, "firstCharacter", Some(4), &[]).unwrap().directory[0].size, 121);
         let requests: Vec<String> = (0..5).map(|_| rx.recv().unwrap()).collect();
         for request in &requests[..4] {
             assert!(request.contains("type=4"), "{request}");
