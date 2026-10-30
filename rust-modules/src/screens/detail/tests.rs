@@ -3575,3 +3575,60 @@ fn play_from_a_shelf_card_without_a_part_plays_the_loaded_items_file() {
     assert_eq!((vcodec.as_str(), acodec.as_str()), ("hevc", "eac3"));
     clear();
 }
+
+/// Back from a cast member's page: the covered body is live and still scrolled to the Cast row.
+/// `restore_memory` must not send it to the top while the re-read is owed (`reveal_focus` skips a
+/// waiting return, so the page would run to 0 and back once the refetch lands). Upstream #1099.
+#[test]
+fn a_restore_memory_keeps_the_scroll_of_a_live_body_while_the_re_read_is_owed() {
+    let sid = ServerId::UNSET;
+    let guard = install(detail(sid, "show"));
+    let mut screen = bare(&guard, sid, "show");
+    screen.sync_keys(test_store().view());
+    screen.scroll_target = 839.0;
+    screen.scroll.pos = 839.0;
+    screen.refresh = DetailRefreshPhase::Deferred;
+    let memory = crate::screens::registry::DetailMemory {
+        spot: crate::metadata::Spot { section: 4, col: 0, ..Default::default() },
+        keys: screen.keys.clone(),
+        next_elem: screen.next_elem,
+    };
+    screen.restore_memory(&memory, test_store().view());
+    assert!(screen.return_pending && screen.restore_intent.is_some(), "the return still waits for its card");
+    assert_eq!(screen.scroll_target, 839.0, "the live body stays where it was");
+    clear();
+}
+
+/// The same return with the detail gone from the store and its re-read FAILING: nothing moves the
+/// scroll after that (`reveal_focus` returns early without a detail) and the hero, the only thing
+/// drawn without one, is faded out, so the page must go back to the top where the hero is.
+#[test]
+fn a_return_whose_re_read_fails_puts_the_page_back_at_the_top() {
+    let guard = nj_base::testlock::serial();
+    let sid = ServerId::UNSET;
+    test_store().run(MetadataCmd::Clear);
+    crate::metadata::set_current_for_test(test_store().state_mut(), None);
+    let mut screen = bare(&guard, sid, "show");
+    screen.sync_keys(test_store().view());
+    screen.scroll_target = 839.0;
+    screen.scroll.pos = 839.0;
+    screen.refresh = DetailRefreshPhase::Requested;
+    let memory = crate::screens::registry::DetailMemory {
+        spot: crate::metadata::Spot { section: 4, col: 0, ..Default::default() },
+        keys: screen.keys.clone(),
+        next_elem: screen.next_elem,
+    };
+    screen.restore_memory(&memory, test_store().view());
+    assert_eq!(screen.scroll_target, 839.0, "the return waits for its re-read where the body was left");
+    let generation = crate::metadata::begin_detail_for_test(test_store().adapter_ref(), sid, "show");
+    {
+        let (state, adapter) = test_store().split_for_test();
+        assert!(!crate::metadata::land_detail_for_test(state, adapter, sid, "show", generation, None));
+    }
+    assert!(screen.detail(test_store().view()).is_none());
+    pump_restore(&mut screen);
+    assert!(screen.restore_intent.is_none() && !screen.return_pending, "the return gave up");
+    assert_eq!(screen.scroll_target, 0.0, "a page with no detail shows only the hero, so it goes back to it");
+    test_store().run(MetadataCmd::Clear);
+    clear();
+}
