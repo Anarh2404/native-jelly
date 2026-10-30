@@ -788,6 +788,7 @@ pub(crate) fn activate_ctrl_row(
                 }
                 // a `final` credits segment: skipping it IS finishing the item
                 SkipAction::Finish => {
+                    ps.finished = true;
                     let _ = finish_playback(ps, pa, refresh_hubs_at, pages, bridge);
                     true
                 }
@@ -804,9 +805,11 @@ pub(crate) fn activate_ctrl_row(
 /// paths reach here (EOS, Skip Credits on a `final` marker, and OK on the HUD tile while
 /// the credits are still rolling) and in all three an Engine is live — `start_bufferfeed`
 /// no-ops while one is, so skipping the stop would silently fail to advance. The stop is
-/// also what posts the `state=stopped` timeline that commits the watched state, and it
-/// must happen BEFORE `request_play_up_next`: teardown reads the outgoing item's session
-/// ids and clears the URL, both of which the new plan is about to overwrite.
+/// also what posts the `state=stopped` timeline, which the server commits the watched state from
+/// only at 90 % or later; below that the stop also marks the item played
+/// (`PlaybackSession::finished`, armed here). It must happen BEFORE `request_play_up_next`: teardown
+/// reads the outgoing item's session ids and clears the URL, both of which the new plan is about to
+/// overwrite.
 pub(crate) fn play_up_next(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
@@ -818,6 +821,8 @@ pub(crate) fn play_up_next(
     let Some(u) = super::bridge::player_mut(pages).and_then(|player| player.up_next.take(ps)) else {
         return false;
     };
+    // Leaving for the next episode is finishing this one (`route::scrobble_stop` takes the flag).
+    ps.finished = true;
     play_queue_episode(ps, pa, hud_ms, pages, bridge, u)
 }
 

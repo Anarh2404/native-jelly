@@ -360,3 +360,64 @@ fn a_session_resolved_for_a_preview_never_reports_a_timeline() {
     reset_player_control_for_test(&ps);
     reset_session(&mut ps);
 }
+
+/// **A stop that finished the item marks it played, after its `stopped` report, only below the
+/// server's own threshold.** Jellyfin 12.0 leaves an episode unwatched at a stop at 89 % and marks it
+/// at 91 %, and long credits start before that. The flag is taken by the stop that reads it: the next
+/// stop, which the viewer did not finish, posts `stopped` alone.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_finished_stop_marks_the_item_played_only_below_the_threshold() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    assert!(nj_net::net::global_init() && crate::curlio::available());
+    drain_scrobble();
+    reset_session(&mut ps);
+    reset_player_control_for_test(&ps);
+    let server = jf_loopback();
+    let rk = jf_rk();
+    let stop = |ps: &mut crate::route::PlaybackSession, finished: bool, t_ms: i64| {
+        apply_plan(ps, Plan { sid: server.sid, sess: "logical".into(), ..Default::default() }, &rk);
+        install_active_encoder("");
+        ps.finished = finished;
+        scrobble_stop(ps, Some((rk.clone(), t_ms, 60_000)), None, true);
+        drain_scrobble();
+        assert!(!ps.finished, "the stop took the flag, so it cannot mark the next item");
+    };
+    let marks = |lines: Vec<String>| lines.iter().filter(|l| l.starts_with("POST /UserPlayedItems/")).count();
+    let lines = || server.seen().into_iter().map(|r| r.line).collect::<Vec<_>>();
+
+    // The viewer left at 85 %: `stopped`, then the mark.
+    stop(&mut ps, true, 51_000);
+    let seen = lines();
+    assert_eq!(marks(seen.clone()), 1, "{seen:?}");
+    let at = |needle: &str| seen.iter().position(|l| l.starts_with(needle)).unwrap();
+    assert!(at("POST /Sessions/Playing/Stopped ") < at("POST /UserPlayedItems/"), "{seen:?}");
+    // Past the threshold the server counted it already.
+    stop(&mut ps, true, 55_000);
+    assert_eq!(marks(lines()), 1, "a second mark past the threshold: {:?}", lines());
+    // An ordinary stop at the same place as the first: not finished, so no mark.
+    stop(&mut ps, false, 51_000);
+    assert_eq!(marks(lines()), 1, "a stop the viewer did not finish was marked: {:?}", lines());
+
+    let _ = server.finish();
+    reset_session(&mut ps);
+    install_active_encoder("");
+    reset_player_control_for_test(&ps);
+}
+
+/// A flag the previous stop never took (the stop posted nothing) must not mark the next item.
+#[test]
+fn a_play_request_clears_a_stale_finished_flag() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    reset_session(&mut ps);
+    ps.finished = true;
+    let mut meta = crate::stores::metadata::MetadataStore::default();
+    let _ = request_play(&mut ps, &mut meta, ServerId::from_raw(0), "1", "", "", "", "", "", 0);
+    assert!(!ps.finished);
+    // The request is live and its pending flag is process-global: a later test would read Resolving.
+    cancel_play(&mut ps);
+    assert!(!play_pending());
+    reset_session(&mut ps);
+}

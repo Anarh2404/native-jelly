@@ -99,6 +99,11 @@ pub(crate) struct PlaybackSession {
     /// stored here: the release machine owns that fact and `player::state` reads what the adapter
     /// publishes of it. Cleared by the next start that is not refused and with the playback verdict.
     pub(crate) native_start_refused: Option<StartRefusal>,
+    /// The viewer left this item for the next one from its credits (Up Next, or Skip on a `final`
+    /// credits marker). Jellyfin marks an item played from a stop only at 90 % or later (measured on
+    /// 12.0: 89 % stays unwatched, 91 % is played) and long credits start before that, so a stop below
+    /// [`past_watched_threshold`] then marks it played explicitly. Read and cleared by [`scrobble_stop`].
+    pub(crate) finished: bool,
     /// Error retained after releasing a terminal Engine; retired by a new request or stop.
     engine_failure: Option<crate::player::RuntimeFailure>,
     /// Read-only publication of Player.repair for the HUD. Never authorizes a resource effect.
@@ -430,6 +435,7 @@ impl PlaybackSession {
         direct_play_mode: DirectPlayMode::Auto,
         jail_load_blocked: false,
         native_start_refused: None,
+        finished: false,
         engine_failure: None,
         repair_status: nj_platform::tv::sandbox::State::Idle,
         request: None,
@@ -508,6 +514,7 @@ impl PlaybackSession {
             direct_play_mode,
             jail_load_blocked,
             native_start_refused,
+            finished,
             engine_failure,
             repair_status,
             request,
@@ -567,6 +574,7 @@ impl PlaybackSession {
             direct_play_mode: *direct_play_mode,
             jail_load_blocked: *jail_load_blocked,
             native_start_refused: *native_start_refused,
+            finished: *finished,
             engine_failure: *engine_failure,
             repair_status: *repair_status,
             request: request.clone(),
@@ -4887,6 +4895,15 @@ struct ScrobbleWork {
     presented: bool,
     transcode_session: String,
     timeline_stop: Option<TimelineStopCompletion>,
+    /// Mark the item played once the `stopped` report is in, if it landed below the server's own
+    /// threshold (`PlaybackSession::finished`).
+    mark_played: bool,
+}
+
+/// Is `ms` into an item `dur_ms` long at or past the point where Jellyfin marks it played from a
+/// stop? False for an unknown duration. Past it, a second mark would only count a second play.
+fn past_watched_threshold(ms: i64, dur_ms: i64) -> bool {
+    dur_ms > 0 && ms.saturating_mul(100) >= dur_ms.saturating_mul(90)
 }
 
 impl ScrobbleWork {
@@ -4922,6 +4939,12 @@ impl ScrobbleWork {
                 d_ms / 1000,
                 ok as i32,
             ));
+            // Only a stop BELOW the server's own threshold needs this: past it the report just
+            // posted already counted the play.
+            if self.mark_played && d_ms > 0 && !past_watched_threshold(t_ms, d_ms) {
+                let marked = self.client.is_some_and(|c| c.scrobble(&rk));
+                nj_base::eventlog::log(&format!("marked played at the credits ok={}", marked as i32));
+            }
         }
         // This is the semantic publication boundary: old reporter joined, then old stopped was
         // attempted in the common effect lane. Wake replacement reporters before the unrelated
@@ -4962,6 +4985,7 @@ pub(crate) fn scrobble_stop(
     }
     let (logical_session, pq, pqi) = (sess(ps), pq_id(ps), pq_item_id(ps));
     let (aud, sub) = (cur_audio_sid(ps), cur_sub_sid(ps)); // the selection this playback reported under
+    let mark_played = std::mem::take(&mut ps.finished);
     let tsession = take_active_encoder();
     let session = if tsession.is_empty() {
         logical_session
@@ -5001,6 +5025,7 @@ pub(crate) fn scrobble_stop(
         presented,
         transcode_session: tsession,
         timeline_stop,
+        mark_played,
     })));
     let worker = work.clone();
     let join_generation = SCROBBLE_JOIN.reserve();
@@ -6422,6 +6447,7 @@ fn request_play_inner(
         s.play_verdict = None;
         s.jail_load_blocked = false;
         s.native_start_refused = None;
+        s.finished = false; // a flag the previous stop never took must not mark THIS item
         s.engine_failure = None;
         s.resolve_failed = false;
     } };
@@ -6955,6 +6981,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::Meta
             direct_play_mode: plan.direct_play_mode,
             jail_load_blocked: false,
             native_start_refused: None,
+            finished: false,
             engine_failure: None,
             repair_status: nj_platform::tv::sandbox::State::Idle,
             request,
