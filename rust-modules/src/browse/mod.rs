@@ -508,6 +508,9 @@ struct SecState {
     total: i64,      // -1 = unknown (first fetch of this query still out)
     items: SecItems,
     cursor: Option<Arc<Cursor>>,
+    /// The server's library changed while a reader was on this grid: its pages are forgotten when
+    /// they leave it, not under them (`BrowseState::listings_changed`).
+    listing_stale: bool,
 }
 
 /// A section's items, CHUNKED BY PAGE (restructure phase 4, the O(result) rule of spec §5.2 —
@@ -638,11 +641,23 @@ impl Default for SecState {
             total: -1,
             items: SecItems::default(),
             cursor: None,
+            listing_stale: false,
         }
     }
 }
 
 impl SecState {
+    /// Back to never having been listed: the next visit fetches afresh. The query stands.
+    fn forget_listing(&mut self) {
+        self.fetch = SecFetch::Loading;
+        self.total = -1;
+        self.items.clear();
+        self.cursor = None;
+        self.letters = Arc::new(Vec::new());
+        self.letters_done = false;
+        self.listing_stale = false;
+    }
+
     fn query_filters(&self, section_kind: SecKind) -> Vec<(String, String)> {
         let mut filters = Vec::new();
         if let Some(kind) = self.library_type.plex_type(section_kind) {
@@ -912,6 +927,27 @@ impl BrowseState {
         self.gen = self.gen.wrapping_add(1);
         self.gen
     }
+    /// See [`BrowseCmd::ListingsChanged`]. True when a section let go of anything.
+    fn listings_changed(&mut self, sid: ServerId, library_on_stack: bool) -> bool {
+        let current = self.cur();
+        let mut hit = false;
+        for i in 0..self.states.len() {
+            if self.section_sid(i) != Some(sid) {
+                continue;
+            }
+            let Some(state) = self.states.get_mut(i) else { continue };
+            if i == current && library_on_stack {
+                state.listing_stale = true;
+            } else {
+                state.forget_listing();
+                hit = true;
+            }
+        }
+        if hit {
+            self.bump_gen();
+        }
+        hit
+    }
     fn requery(&mut self) {
         self.bump_gen();
         let current = self.cur();
@@ -925,6 +961,10 @@ impl BrowseState {
     fn set_cur(&mut self, i: usize) {
         if i >= self.sections.len() || i == self.cur() {
             return;
+        }
+        let left = self.cur();
+        if let Some(state) = self.states.get_mut(left).filter(|state| state.listing_stale) {
+            state.forget_listing();
         }
         self.cur = i;
         self.bump_gen();
@@ -2092,6 +2132,7 @@ impl BrowseState {
                 self.reset_owned(adapter);
                 true
             }
+            BrowseCmd::ListingsChanged { sid, library_on_stack } => self.listings_changed(sid, library_on_stack),
             BrowseCmd::HubsInvalidateAll => {
                 self.hubs_invalidate_all(adapter);
                 true

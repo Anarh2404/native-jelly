@@ -874,6 +874,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             // Reacquire only on DID foreground, before playback restoration and rendering.
             restore_window(app.win);
             nj_machine::idle::invalidate();
+            app.library_poll.foregrounded(fr.now);
             let activation = drive_foreground(
                 &mut app.player.lifecycle,
                 &mut app.player.session,
@@ -1544,6 +1545,22 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
             // Bridge-owned Browse store through `Bridge::browse_run`.
             app.bridge.browse_run(crate::stores::browse::BrowseCmd::HubsInvalidateAll);
             log("home: hubs refresh queued after playback");
+        }
+        // A controlled replay's every input is on its tape, and this is not.
+        if app.boot_initial.is_none() {
+            let changed = app.library_poll.tick(fr.now, matches!(app.route(), AppArg::Player));
+            for sid in &changed {
+                log(&format!("library: sid={} changed on the server", sid.raw()));
+                let library_on_stack = app.pages.nav.bodies().any(|entry| entry.arg == AppArg::Library);
+                app.bridge.browse_run(crate::stores::browse::BrowseCmd::ListingsChanged { sid: *sid, library_on_stack });
+            }
+            if !changed.is_empty() {
+                super::bridge::execute_endpoint_outcomes(
+                    &mut app.pages,
+                    app.bridge.hubs_run(crate::stores::hubs::HubsCmd::RefetchHubs).endpoints,
+                );
+                app.bridge.browse_run(crate::stores::browse::BrowseCmd::HubsInvalidateAll);
+            }
         }
         // (The lost-keyup safety net and the CLIENT-SIDE LONG-PRESS REPEAT stood here — the one
         // hold-to-move path for every discrete focus list, driven by `App::held_key` at 110 ms so
@@ -3142,6 +3159,7 @@ mod lifecycle_regression_tests {
             menu_play_await: Default::default(),
             prev: Default::default(),
             refresh_hubs_at: Default::default(),
+            library_poll: Default::default(),
             plaintext_upgrade: Default::default(),
             ev: [0; 128],
             remote: Default::default(),

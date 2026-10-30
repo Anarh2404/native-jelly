@@ -3,6 +3,57 @@
 mod tests {
     use super::super::*;
 
+    fn table_with_every_section_loaded() -> BrowseState {
+        let mut state = BrowseState::default();
+        let a = crate::catalog::register_for_test("poll-a", "10.0.0.1", 8096, "tok", "cid-a");
+        let b = crate::catalog::register_for_test("poll-b", "10.0.0.2", 8096, "tok", "cid-b");
+        seed_registered_table_for_owner_test(&mut state, [a, b]);
+        for i in 0..state.sections.len() {
+            let st = state.state_mut(i).unwrap();
+            st.total = 1;
+            st.items = SecItems::from_vec(vec![Some(PmsMovie::default())]);
+            st.cursor = Some(Arc::new(Cursor { at: CursorAt::SlotIndex(0), scroll: 12.0 }));
+            st.letters = Arc::new(vec![("A".into(), 1)]);
+            st.letters_done = true;
+        }
+        state
+    }
+
+    /// A library change lets go of what a reader is not on at once, and of the grid they are on only
+    /// when they leave it. Another server's sections keep everything.
+    #[test]
+    fn a_library_change_forgets_pages_but_never_under_the_reader() {
+        let _guard = nj_base::testlock::serial();
+        let mut state = table_with_every_section_loaded();
+        let current = state.cur();
+        let sid = state.section_sid(current).unwrap();
+        let foreign = (0..state.sections.len()).find(|&i| state.section_sid(i) != Some(sid)).expect("a second server");
+        let foreign_sid = state.section_sid(foreign).unwrap();
+
+        assert!(state.listings_changed(sid, true) || state.states[current].listing_stale);
+        assert_eq!(state.states[current].total, 1, "the grid under the reader stands");
+        assert!(state.states[current].cursor.is_some());
+        assert_eq!(state.states[foreign].total, 1, "another server's section moves nothing");
+
+        assert!(state.listings_changed(foreign_sid, true));
+        assert_eq!(state.states[foreign].total, -1, "a section nobody is on fetches afresh next visit");
+        assert!(state.states[foreign].cursor.is_none() && !state.states[foreign].letters_done);
+
+        state.set_cur(foreign);
+        assert_eq!(state.states[current].total, -1, "the stale grid lets go when the reader leaves it");
+        assert!(!state.states[current].listing_stale);
+    }
+
+    #[test]
+    fn a_library_change_with_no_library_page_up_forgets_the_current_section_too() {
+        let _guard = nj_base::testlock::serial();
+        let mut state = table_with_every_section_loaded();
+        let current = state.cur();
+        let sid = state.section_sid(current).unwrap();
+        assert!(state.listings_changed(sid, false));
+        assert_eq!(state.states[current].total, -1);
+    }
+
     #[test]
     fn compound_show_sort_reverses_only_the_show_when_the_descending_key_is_absent() {
         let mut sort = SortEntry {

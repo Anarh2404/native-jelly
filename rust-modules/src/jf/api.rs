@@ -666,6 +666,15 @@ impl<'a> Jf<'a> {
         Some(out)
     }
 
+    /// What the viewer's whole library looks like right now: its size and its newest item, the two
+    /// facts a change moves (`stores::library_poll`). No images, no user data: this runs on a timer.
+    pub fn library_signature(&self) -> Option<(i64, String)> {
+        let r = self.items(Q::new("/Items").b("Recursive", true).s("IncludeItemTypes", "Movie,Series,Episode")
+            .s("SortBy", "DateCreated").s("SortOrder", "Descending").i("Limit", 1)
+            .b("EnableTotalRecordCount", true).b("EnableImages", false).b("EnableUserData", false))?;
+        Some((r.total_record_count, r.items.first().map(|i| ids::normalize(&i.id)).unwrap_or_default()))
+    }
+
     /// One library's shelves: Continue Watching (`/UserItems/Resume`), Next Up for TV
     /// (`/Shows/NextUp`) and Recently Added (`/Items/Latest`), empty ones dropped.
     pub fn library_shelves(&self, section_key: i64, count: i64) -> Option<Vec<JfShelf>> {

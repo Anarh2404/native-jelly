@@ -288,6 +288,8 @@ pub(crate) struct App {
     pub(crate) menu_play_await: Option<MenuPlayAwait>,
     pub(crate) prev: u32,
     pub(crate) refresh_hubs_at: u32,
+    /// Noticing a library change on the server (`stores::library_poll`), stepped every frame.
+    pub(crate) library_poll: crate::stores::library_poll::LibraryPoll,
     /// The HTTPS retry for servers on a plaintext grant (`plex::grant::UpgradeRetry`), stepped
     /// every frame beside the view-state pump (`app/run.rs`).
     pub(crate) plaintext_upgrade: crate::catalog::grant::UpgradeRetry,

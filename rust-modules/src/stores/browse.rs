@@ -77,6 +77,10 @@ pub(crate) enum BrowseCmd {
     /// The profile/account switch: wipe everything and supersede everything in flight.
     Reset,
     HubsInvalidateAll,
+    /// Items were created or removed on one server (`stores::library_poll`, never a press). Its
+    /// sections forget their pages and fetch afresh on their next visit, except a grid a reader is on
+    /// (`library_on_stack`): that is left alone until they leave it, so nothing moves under them.
+    ListingsChanged { sid: ServerId, library_on_stack: bool },
     /// The optimistic half of a view-state write, on the grid and the shelves.
     SetWatchedLocal {
         sid: ServerId,

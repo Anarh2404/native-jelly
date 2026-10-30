@@ -47,6 +47,7 @@ pub(crate) mod browse;
 mod content_arg;
 pub(crate) use content_arg::ContentArg;
 pub(crate) mod hubs;
+pub(crate) mod library_poll;
 pub(crate) mod metadata;
 pub(crate) mod person;
 pub(crate) mod collection;
