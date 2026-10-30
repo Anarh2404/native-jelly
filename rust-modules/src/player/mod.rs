@@ -16,7 +16,7 @@
 //! `threads::load_thread` calls `sf_load` off-main by design (see `ffi`), and a real stop's
 //! `sf_unload` runs on the `sf-unload` worker on an `UnloadTicket` (`engine::PendingRelease`): the
 //! rest of that release (gate, retire, ACB plane, D1, `destroy_window`) stays on the main thread,
-//! and the adapter keeps every other seam call waiting until it is done.
+//! and `sink()` answers a no-op sink to every other main-thread verb until it is done.
 #![allow(non_upper_case_globals)]
 pub(crate) mod adapter;
 pub(crate) mod claim_hold;
@@ -29,6 +29,7 @@ pub(crate) mod lifecycle;
 pub(crate) mod machine;
 pub(crate) mod playurl; // the `nativejelly-playurl` dev trigger: a stream and its Load declaration, parsed beside the engine that acts on it
 pub(crate) mod preview;
+pub(crate) mod release; // the native object's off-frame release lifecycle (pure machine); `engine` runs it
 #[cfg(all(not(feature = "hostsim"), not(test)))]
 pub(crate) mod ffi;
 #[cfg(feature = "hostsim")]
@@ -66,12 +67,32 @@ use shared::{
 /// (`player::ffi::StarfishSink`) or the simulator's (`player::ffi_host::HostSink`) once at boot; a
 /// hostsim test binary reads the host sink directly, so it needs no port. Everything in `player/`
 /// reaches the seam as `sink().<verb>(mt, ..)`, and nothing branches on which platform it is.
-#[cfg(not(all(test, feature = "hostsim")))]
+///
+/// **While an off-frame `Unload` owns the native object this answers [`FENCE`]**, so the main
+/// thread cannot reach the object the worker is inside (the fence `PlayerAdapter::mt` used to
+/// provide by joining the worker, without a bound). The release itself, which has to reach the
+/// real seam, uses [`raw_sink`].
 fn sink() -> &'static dyn nj_platform::tv::sink::VideoSink {
+    if SHARED.native_releasing() {
+        &FENCE
+    } else {
+        raw_sink()
+    }
+}
+
+/// What a main-thread verb gets while the object is inside its off-frame `Unload`: nothing happens
+/// (every verb refused, `NoSink`'s answers), except the memoized queries that say nothing about the
+/// object, which keep the real answer.
+static FENCE: nj_platform::tv::sink::RefusingSink = nj_platform::tv::sink::RefusingSink(raw_sink);
+
+/// The seam itself, unfenced: only the native release (the `Unload` worker and its main-thread
+/// tail) may use it while the object is `Releasing`.
+#[cfg(not(all(test, feature = "hostsim")))]
+fn raw_sink() -> &'static dyn nj_platform::tv::sink::VideoSink {
     nj_platform::tv::sink::installed()
 }
 #[cfg(all(test, feature = "hostsim"))]
-fn sink() -> &'static dyn nj_platform::tv::sink::VideoSink {
+fn raw_sink() -> &'static dyn nj_platform::tv::sink::VideoSink {
     &ffi_host::HostSink
 }
 
@@ -630,7 +651,7 @@ pub(crate) fn state(ps: &crate::route::PlaybackSession) -> shared::PlaybackState
     // Resolving is DERIVED here rather than stored: the pump owns `pb_state` but only runs once
     // an engine exists, which is false for the whole resolve window. Deriving in the one reader
     // keeps a single writer instead of poking the state in from the frame loop.
-    if crate::route::play_pending() {
+    if crate::route::play_pending() || SHARED.start_queued.load(Relaxed) {
         return shared::PlaybackState::Resolving;
     }
     // …and so is the PRE-FLIGHT refusal, for exactly the same reason: `/decision` answers before a
@@ -638,7 +659,10 @@ pub(crate) fn state(ps: &crate::route::PlaybackSession) -> shared::PlaybackState
     // that owns `pb_state` never runs. Deriving it in the one reader keeps a single writer — the
     // alternative is poking `Error` into the player's state from the frame loop. It sits BELOW the
     // resolve check because a fresh resolve is the thing that retires the last verdict.
-    if ps.jail_load_blocked || crate::route::play_refused(ps) || crate::route::play_resolution_failed(ps)
+    // A start refused because a timed-out Load is still parked, or because the previous object's
+    // off-frame Unload outlived `RELEASE_DEADLINE` (`ps.native_start_refused`), is the same kind of
+    // fact: no Engine was built, so nothing else could say why the player is empty.
+    if ps.jail_load_blocked || ps.native_start_refused.is_some() || crate::route::play_refused(ps) || crate::route::play_resolution_failed(ps)
         || crate::route::engine_failure(ps).is_some() {
         return shared::PlaybackState::Error;
     }
@@ -758,6 +782,10 @@ pub(crate) enum FailureKind {
     /// reported: this is a HANG, and conflating the two made a k5lp-style stall indistinguishable
     /// from an ordinary rejection on the wire.
     LoadTimeout,
+    /// The previous native object's off-frame `Unload` had not returned after
+    /// [`release::RELEASE_DEADLINE`], so a new start was refused rather than handed a second object.
+    /// A hang like [`LoadTimeout`](Self::LoadTimeout), on the other side of the session.
+    ReleaseTimeout,
     /// Everything else. Honest rather than tidy — see the type's doc.
     Unspecified,
 }
@@ -778,6 +806,7 @@ impl FailureKind {
             FailureKind::TvPipeline => C::TvPipeline,
             FailureKind::JailMissingRtkmem => C::JailMissingRtkmem,
             FailureKind::LoadTimeout => C::LoadTimeout,
+            FailureKind::ReleaseTimeout => C::ReleaseTimeout,
             FailureKind::Unspecified => C::Unspecified,
         }
     }
@@ -843,7 +872,7 @@ pub(crate) fn failure_actions(kind: FailureKind, cx: FailureContext) -> Vec<Fail
     use FailureAction as A;
     use FailureKind as K;
     let transient = matches!(kind, K::MediaSource | K::PlaybackInterrupted | K::LoadTimeout
-        | K::Unspecified);
+        | K::ReleaseTimeout | K::Unspecified);
     let mut v = Vec::with_capacity(4);
     match kind {
         // A device finding: nothing about the request changes it; only the repair can.
@@ -939,6 +968,8 @@ pub(crate) enum RuntimeFailure {
     /// Issue #74 D.1.4's `NATIVE_LOAD_BUDGET` fired — a hang, not a firmware refusal. See
     /// [`FailureKind::LoadTimeout`].
     LoadTimeout,
+    /// The previous object's `Unload` is overdue. See [`FailureKind::ReleaseTimeout`].
+    ReleaseTimeout,
 }
 
 /// PURE: turn the four terminal worker signals into one cause. More specific downstream evidence
@@ -1083,6 +1114,16 @@ fn error_shape(
             detail: std::borrow::Cow::Borrowed(""),
             no_pass: false,
         },
+        // The read-out reuses the load-timeout wording: both are "the television did not answer in
+        // time", and a new sentence needs every language (the catalog is not extended here).
+        RuntimeFailure::ReleaseTimeout => ErrorShape {
+            kind: FailureKind::ReleaseTimeout,
+            caption: nj_platform::i18n::msg::widgets_failure_load_timeout_c(),
+            panel: nj_platform::i18n::msg::widgets_panel_load_timeout(),
+            readout: nj_platform::i18n::msg::widgets_reason_load_timeout(),
+            detail: std::borrow::Cow::Borrowed(""),
+            no_pass: false,
+        },
         RuntimeFailure::Unknown => ErrorShape {
             kind: FailureKind::Unspecified,
             caption: nj_platform::i18n::msg::widgets_status_failed_c(),
@@ -1135,11 +1176,16 @@ fn with_forced_playback_context(mut shape: ErrorShape, forced: bool) -> ErrorSha
 
 /// The standing session error outlives the worker flags reset by Engine teardown.
 fn live_runtime_failure(ps: &crate::route::PlaybackSession) -> RuntimeFailure {
+    if ps.native_start_refused == Some(crate::route::StartRefusal::ReleaseTimeout) {
+        return RuntimeFailure::ReleaseTimeout;
+    }
     crate::route::engine_failure(ps).unwrap_or_else(|| runtime_failure(
         SHARED.demux_failed.load(std::sync::atomic::Ordering::Acquire),
         SHARED.demux_io_failed.load(std::sync::atomic::Ordering::Acquire),
         SHARED.load_failed.load(Relaxed),
-        SHARED.load_timed_out.load(Relaxed),
+        // The refused start's cause: an abandoned Load exists only after the budget fired.
+        SHARED.load_timed_out.load(Relaxed)
+            || ps.native_start_refused == Some(crate::route::StartRefusal::LoadTimeout),
     ))
 }
 
@@ -2409,7 +2455,7 @@ pub(crate) fn failtest_policy_shape_for_test(verdict: &str) -> ErrorShape {
 pub(crate) fn every_failure_row() -> Vec<(FailureKind, FailureContext, Vec<FailureAction>)> {
     use FailureKind as K;
     let kinds = [K::DecisionRefused, K::PlaybackPolicy, K::NoVideoTranscodeTarget, K::NoVideoTrack,
-        K::MediaSource, K::PlaybackInterrupted, K::TvPipeline, K::LoadTimeout,
+        K::MediaSource, K::PlaybackInterrupted, K::TvPipeline, K::LoadTimeout, K::ReleaseTimeout,
         K::JailMissingRtkmem, K::Unspecified];
     let mut out = Vec::new();
     for kind in kinds {
@@ -2489,6 +2535,7 @@ mod tests {
             (K::TvPipeline, "tv_pipeline"),
             (K::JailMissingRtkmem, "jail_missing_rtkmem"),
             (K::LoadTimeout, "load_timeout"),
+            (K::ReleaseTimeout, "release_timeout"),
             (K::Unspecified, "unspecified"),
         ];
         for (kind, code) in table {

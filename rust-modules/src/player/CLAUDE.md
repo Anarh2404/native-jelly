@@ -49,16 +49,22 @@ direct-play capability.
   only: `for_reload == false`) moves the native phase to `Releasing`, hands the Unload to an
   `sf-unload` worker with an `UnloadTicket`, and parks the worker on the adapter. The rest of the
   release — callback gate, epoch retire, ACB plane unload, D1 or quarantine, `destroy_window` —
-  stays on the main thread and runs in `settle_release`: on the first frame after the Unload
-  returns (`run.rs` → `poll_release`), or at once, blocking, from `start_bufferfeed_inner`,
-  `pa.mt()`, `pa.split()` and `shutdown`, so nothing reaches the seam or builds a new object while
-  the old one is still inside Unload. While `Releasing`, only that epoch's `UnloadCompleted` callback
-  is admitted (it is D1's evidence, and it counts into nothing the next session owns) and no native
-  session can begin. Reloads, suspend and the decoder-release park (`for_reload == true`) keep the
-  synchronous release. The log reads `native lifecycle: off-frame Unload epoch=N released X ms after
-  the stop`, with `(a caller waited for it)` when a blocking caller had to wait. Not yet measured on
-  the TV after the change; a hung Unload still blocks the next start (upstream #1116 is the
-  follow-up).
+  stays on the main thread and runs in `engine::poll_release` (the pure machine `release.rs`
+  decides): on the first frame after the Unload returns (`run.rs` → `poll_release_frame`). Nothing
+  blocks on the worker. A start over a running Unload returns `BufferfeedStartOutcome::Deferred` (the
+  player reads Resolving) and runs the frame the tail has run; `pa.mt()`/`pa.split()` hand out the
+  token at once while `player::sink()` answers `RefusingSink` (`player::FENCE`: every verb refused,
+  the memoized queries real) for the `Releasing` phase. Past `RELEASE_DEADLINE` (10 s) a start is
+  refused with `FailureKind::ReleaseTimeout` (Try Again), and the object is leaked, never destroyed
+  under the worker, until the Unload returns. A stop always cancels a queued start. The foreground
+  restore follows only a launched attempt, so a start it finds deferred is cancelled and takes the
+  refusal edge (the prepared route stays; Play retries). `shutdown` waits through `exit_native`,
+  bounded by the same deadline; a worker still in firmware leaks the parked release and any abandoned
+  Load, skips `SDL_Quit` and ends in `exit_now` without dropping the `App`. While `Releasing`, only
+  that epoch's `UnloadCompleted` callback is admitted (it is D1's evidence, and it counts into nothing
+  the next session owns) and no native session can begin. Reloads, suspend and the decoder-release
+  park (`for_reload == true`) keep the synchronous release. The log reads `native lifecycle: off-frame
+  Unload epoch=N released X ms after the stop`. Not yet measured on the TV after the change.
 - `pump.rs` — the **main-thread pump** (was `bufferfeed_pump`): each frame it drives bind → Play →
   feed and services seeks.
 - `threads.rs` — the workers beside the demuxer: **`load_thread`** (construct Starfish + `Load()`,
@@ -155,8 +161,11 @@ something.
   thread still inside `sf_load` (that froze the SDL thread on BACK): the thread, payload and
   epoch are parked as `engine::AbandonedLoad` (Rust phase `Abandoned`), native starts are
   refused, and `reap_abandoned_load` runs the ordinary Unload → gate → retire → D1 release on the
-  main thread once Load returns; a Load that never returns leaks its object. A Load that has not
-  timed out is still joined. The host concurrent tests model this boundary, not
+  main thread once Load returns; a Load that never returns leaks its object. A refused fresh start
+  sets `ps.native_start_refused` (`Option<StartRefusal>`), which `player::state` derives `Error` from
+  because no Engine exists to publish it: cause `load_timeout` for a parked Load, `release_timeout`
+  for an overdue Unload. Both offer Try Again, and the first start that is not refused clears it. A
+  Load that has not timed out is still joined. The host concurrent tests model this boundary, not
   the firmware's native initialization. ACB dispatch is additionally constrained by stage/bind
   ordering; the C Starfish gate does not wrap ACB calls.
 - **A claimed retranscode HOLDS presentation for its worker's flight (`claim_hold.rs`).** The PMS

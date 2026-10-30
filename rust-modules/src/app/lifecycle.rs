@@ -69,6 +69,14 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
                 ForegroundLoadStart::Launched(attempt)
             }
             crate::player::BufferfeedStartOutcome::Failed => unreachable!("handled above"),
+            // The previous object is still inside its `Unload`. This machine follows only a launched
+            // attempt, so the queued start is cancelled and the refusal edge taken: the prepared
+            // route stays, and Play retries it. A real stop leaves no suspended session to restore,
+            // so reaching this takes a restore racing a stop by the length of an `Unload`.
+            crate::player::BufferfeedStartOutcome::Deferred => {
+                crate::player::engine::cancel_queued_start(ps, self.pa);
+                ForegroundLoadStart::Failed
+            }
         }
     }
 

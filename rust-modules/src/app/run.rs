@@ -196,7 +196,7 @@ pub(crate) unsafe fn run(app: &mut App) {
         crate::player::engine::reap_abandoned_load(&mut app.adapters.player);
         // …and a real stop's off-frame `Unload` gets its main-thread tail (gate, epoch, ACB, D1)
         // the first frame after it returns (`player::engine::PendingRelease`).
-        app.adapters.player.poll_release();
+        crate::player::engine::poll_release_frame(&mut app.player.session, &mut app.adapters.player);
         app.player.session.repair_status = app.player.repair.state();
         app.bridge.publish_playback(&app.player.session, was_player);
         // The container runs its frame: the pending navigation's commit (at `PageDip`'s floor),
@@ -2180,10 +2180,13 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
                     // A preview is the exception: the detail page stays mounted, and an off-route
                     // engine is the feature, not a violation.
                     if resume_prepared {
-                        let started = crate::player::start_bufferfeed(
+                        let outcome = crate::player::start_bufferfeed_tracked(
                             &mut app.player.session,
                             &mut app.adapters.player,
                         );
+                        let started = app.player.session.jail_load_blocked || outcome.accepted();
+                        // Queued behind the previous object's `Unload`: not started yet, so not admitted yet.
+                        let deferred = outcome == crate::player::BufferfeedStartOutcome::Deferred;
                         let preview = crate::route::is_preview(&app.player.session);
                         if started && !matches!(app.route(), AppArg::Player) && !preview {
                             log("pump_play: engine started off-route → restoring AppArg::Player");
@@ -2200,7 +2203,11 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
                             // admitted slot. Counting it spends the cycle and the later failure
                             // opens the breaker, so every later title is skipped.
                             let seam_absent = cfg!(feature = "hostsim") && !nj_base::devtrig::flag("clocksink");
-                            if started && !seam_absent {
+                            if deferred {
+                                // Admission is taken when the queued start launches (or refused if
+                                // the deadline refuses it), by the runner that starts it.
+                                app.adapters.player.admit_preview_at_launch(!seam_absent);
+                            } else if started && !seam_absent {
                                 crate::player::preview::note_admitted();
                             } else if crate::route::url(&app.player.session).is_empty() {
                                 crate::player::preview::note_refused_direct(
@@ -2844,12 +2851,31 @@ pub(crate) unsafe fn heartbeat(app: &mut App, fr: &mut Frame) {
         }
 }
 
+/// How the process ends once [`shutdown`] has flushed everything.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Teardown {
+    /// SDL is quit and nothing native is running: drop the `App`, then `exit_now`.
+    Return,
+    /// A native worker is still inside firmware, so no destructor may run under it and the display
+    /// must stay up: the caller ends the process without dropping the `App`.
+    ExitNow,
+}
+
+/// The decision [`shutdown`] acts on, apart from the teardown it performs.
+pub(crate) fn teardown_for(native_exit: crate::player::engine::NativeExit) -> Teardown {
+    match native_exit {
+        crate::player::engine::NativeExit::Clean => Teardown::Return,
+        crate::player::engine::NativeExit::WorkerInFirmware => Teardown::ExitNow,
+    }
+}
+
 /// Teardown after the loop: abandon the pending report, stop the feed, wait for the stop
-/// scrobble, close the capture stream and the poster workers, quit SDL.
+/// scrobble, close the capture stream and the poster workers, quit SDL (unless a worker is still
+/// in firmware, which returns [`Teardown::ExitNow`]).
 pub(crate) unsafe fn shutdown(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
-) {
+) -> Teardown {
     crate::player::report::abandon_pending(ps);
     if is_started() {
         crate::player::stop_bufferfeed(ps, pa);
@@ -2860,11 +2886,21 @@ pub(crate) unsafe fn shutdown(
     // paid, except now it is paid once at exit instead of on every BACK out of a movie.
     crate::route::drain_scrobble();
     // The stop's `Unload` runs off-frame; the process must not exit inside it, nor with the object
-    // it is releasing left undestroyed.
-    pa.finish_release();
+    // it is releasing left undestroyed. The wait is bounded, and a worker still inside firmware (an
+    // overdue `Unload`, or a timed-out Load's media thread) means the display must not be torn down
+    // under it, and nothing may run the firmware's destructors either: the caller
+    // (`app::run_and_shutdown`) ends the process at once on `Teardown::ExitNow`.
+    let native_exit = crate::player::engine::exit_native(pa);
     crate::capture::shutdown();
     crate::app::adapters::poster::shutdown();
-    SDL_Quit();
+    let teardown = teardown_for(native_exit);
+    match teardown {
+        Teardown::Return => SDL_Quit(),
+        Teardown::ExitNow => {
+            log("shutdown: a native worker is still inside firmware; SDL_Quit skipped, exiting without unwinding");
+        }
+    }
+    teardown
 }
 
 /// Re-inject one recorded input (`app::recorder`'s encodings) for the frame being replayed: SDL
@@ -2979,6 +3015,14 @@ unsafe fn controlled_key_input(app: &mut App, event: nj_machine::machine::InputE
 #[cfg(all(test, feature = "hostsim"))]
 mod lifecycle_regression_tests {
     use super::*;
+
+    #[test]
+    fn a_worker_still_in_firmware_ends_the_process_without_unwinding() {
+        use crate::player::engine::NativeExit;
+        assert_eq!(teardown_for(NativeExit::WorkerInFirmware), Teardown::ExitNow);
+        assert_eq!(teardown_for(NativeExit::Clean), Teardown::Return);
+    }
+
     use std::io::{BufRead, BufReader, Read, Write};
     use std::sync::{
         atomic::{AtomicBool, Ordering},

@@ -495,8 +495,18 @@ unsafe fn run_and_shutdown(app: &mut App) -> c_int {
     let failed = finish_recording(&mut app.rec, app.bridge.landgate())
         || app.bridge.controlled_failure().is_some();
     app.glass.sources.borrow_mut().clear();
-    run::shutdown(&mut app.player.session, &mut app.adapters.player);
-    i32::from(failed)
+    let code = i32::from(failed);
+    match run::shutdown(&mut app.player.session, &mut app.adapters.player) {
+        run::Teardown::Return => code,
+        run::Teardown::ExitNow => {
+            // A worker is still inside firmware: returning would drop the `App`, which owns what
+            // that worker may still read. `shutdown` has flushed the scrobble, capture and posters;
+            // the telemetry guard is the one thing left whose `Drop` a clean exit runs, so it is
+            // dropped here (no firmware involved).
+            drop(app.telemetry_guard.take());
+            nj_base::process::exit_now(code)
+        }
+    }
 }
 
 fn finish_recording(rec: &mut recorder::Recplay, gate: &nj_machine::landgate::Gate) -> bool {

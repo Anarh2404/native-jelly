@@ -582,6 +582,12 @@ pub(crate) fn expects_landing() -> bool {
 /// predicate ([`bound_or_playing`], `DetailScreen::full_trailer()`) without wiring a live session
 /// end to end. Reset with [`reset_for_test`] before the guard (`testlock::serial()`) that must
 /// surround both calls is dropped, so no state leaks to whichever test the process runs next.
+/// Test-only: the singleton machine's phase.
+#[cfg(all(test, feature = "hostsim"))]
+pub(crate) fn phase_for_test() -> Phase {
+    with_mut(|m| m.phase)
+}
+
 #[cfg(test)]
 pub(crate) fn set_phase_for_test(phase: Phase) {
     with_mut(|m| m.phase = phase);

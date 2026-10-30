@@ -497,7 +497,11 @@ pub(crate) fn recover_failed_foreground_original(ps: &mut crate::route::Playback
         super::engine::BufferfeedStartOutcome::Launched(attempt) => {
             ForegroundOriginalRecovery::Tracking(attempt)
         }
-        super::engine::BufferfeedStartOutcome::Failed => ForegroundOriginalRecovery::RetryPrepared,
+        // A reload's teardown released synchronously, so nothing defers it; if one ever did, the
+        // queued transaction is the same one the retry names.
+        super::engine::BufferfeedStartOutcome::Failed | super::engine::BufferfeedStartOutcome::Deferred => {
+            ForegroundOriginalRecovery::RetryPrepared
+        }
         super::engine::BufferfeedStartOutcome::AlreadyRunning => {
             set_state(super::shared::PlaybackState::Error);
             ForegroundOriginalRecovery::Terminal

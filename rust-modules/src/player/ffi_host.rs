@@ -230,10 +230,6 @@ pub(super) fn force_play_result_for_test(result: Option<c_int>) {
 pub(super) fn play_calls_for_test() -> u64 {
     PLAY_CALLS.load(Relaxed)
 }
-#[cfg(test)]
-pub(super) fn force_pause_result_for_test(result: Option<c_int>) {
-    FORCE_PAUSE_RESULT.store(result.unwrap_or(i32::MIN), Relaxed);
-}
 
 /// Is the clock sink armed? Read once, at the first seam call, and latched.
 ///
@@ -348,9 +344,65 @@ pub(super) fn force_object_ready_for_test(on: bool) {
     OBJECT_READY.store(on, Relaxed);
 }
 
-/// A fresh host test process without paying for a process per case. Production has deliberately no
-/// equivalent: once a real object is quarantined, clearing this latch would reintroduce reuse.
+/// Makes the host `sf_unload` block until [`release_unload_for_test`]: an `Unload` that does not
+/// return (a firmware hang), where [`delay_unload_for_test`] is a fixed sleep the caller waits out.
 #[cfg(test)]
+static HOLD_UNLOAD: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
+#[cfg(test)]
+pub(super) fn hold_unload_for_test() {
+    *HOLD_UNLOAD.0.lock().unwrap_or_else(|e| e.into_inner()) = true;
+}
+#[cfg(test)]
+pub(super) fn release_unload_for_test() {
+    *HOLD_UNLOAD.0.lock().unwrap_or_else(|e| e.into_inner()) = false;
+    HOLD_UNLOAD.1.notify_all();
+}
+/// How many `sf-unload` workers ([`UnloadWorker`]) are alive. A worker is DETACHED when a test ends
+/// with its object still in firmware (a leaked release, a dropped adapter), so it outlives the test
+/// that made it; `sf_unload` then reads the process-global `ACTIVE_EPOCH` AFTER its hold, which by
+/// then names the NEXT test's session, and delivers UNLOADCOMPLETED into it (`Active` to
+/// `Unloaded`). The next test's own epoch stops owning `Active` at a random moment: the flake of
+/// `exit_after_a_load_timeout_never_quits_the_display_under_a_hung_load`.
+#[cfg(test)]
+static UNLOAD_WORKERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// Counts one `sf-unload` worker from before it is spawned until it ends (drop).
+#[cfg(test)]
+pub(super) struct UnloadWorker(());
+#[cfg(test)]
+impl UnloadWorker {
+    pub(super) fn enter() -> Self {
+        UNLOAD_WORKERS.fetch_add(1, Relaxed);
+        Self(())
+    }
+}
+#[cfg(test)]
+impl Drop for UnloadWorker {
+    fn drop(&mut self) {
+        UNLOAD_WORKERS.fetch_sub(1, Relaxed);
+    }
+}
+#[cfg(test)]
+pub(super) fn unload_workers_for_test() -> usize {
+    UNLOAD_WORKERS.load(Relaxed)
+}
+/// Let a held `Unload` go and wait until every `sf-unload` worker has ended, so none can deliver
+/// into a later test's session. Bounded: a worker still alive after 10 s fails loudly.
+#[cfg(test)]
+fn drain_unload_workers_for_test() {
+    release_unload_for_test();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while UNLOAD_WORKERS.load(Relaxed) != 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "an sf-unload worker never ended: it would deliver UNLOADCOMPLETED into the next test"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+#[cfg(test)]
+pub(super) fn force_pause_result_for_test(result: Option<c_int>) {
+    FORCE_PAUSE_RESULT.store(result.unwrap_or(i32::MIN), Relaxed);
+}
 /// How long the host `sf_unload` takes, in ms — the device's `StarfishMediaAPIs::Unload` blocks
 /// for tens of milliseconds (`engine::PendingRelease`), and a test of the frame that pays for it
 /// needs a sink that takes measurable time too. 0 (the default) is the unmodified, instant Unload.
@@ -361,7 +413,12 @@ pub(super) fn delay_unload_for_test(ms: u64) {
     UNLOAD_DELAY_MS.store(ms, Relaxed);
 }
 
+/// A fresh host test process without paying for a process per case. Production has deliberately no
+/// equivalent: once a real object is quarantined, clearing this latch would reintroduce reuse.
+#[cfg(test)]
 pub(super) fn reset_native_lifecycle_for_test() {
+    // First, while the globals below still name the session the stale worker belongs to.
+    drain_unload_workers_for_test();
     #[cfg(test)]
     UNLOAD_DELAY_MS.store(0, Relaxed);
     ACTIVE_EPOCH.store(0, Relaxed);
@@ -376,6 +433,7 @@ pub(super) fn reset_native_lifecycle_for_test() {
     *IN_FLIGHT_VERB.lock().unwrap_or_else(|e| e.into_inner()) = None;
     *HOLD_LOAD.0.lock().unwrap_or_else(|e| e.into_inner()) = false;
     HOLD_LOAD.1.notify_all();
+    release_unload_for_test();
     Clock::rewind();
 }
 
@@ -539,6 +597,7 @@ unsafe fn sf_load(payload: *const c_char, epoch: u32) -> c_int {
     {
         LOAD_IN_FLIGHT.store(true, Relaxed);
         let mut held = HOLD_LOAD.0.lock().unwrap_or_else(|e| e.into_inner());
+    release_unload_for_test();
         while *held {
             held = HOLD_LOAD.1.wait(held).unwrap_or_else(|e| e.into_inner());
         }
@@ -721,6 +780,10 @@ unsafe fn sf_unload() {
         let ms = UNLOAD_DELAY_MS.load(Relaxed);
         if ms > 0 {
             std::thread::sleep(std::time::Duration::from_millis(ms));
+        }
+        let mut held = HOLD_UNLOAD.0.lock().unwrap_or_else(|e| e.into_inner());
+        while *held {
+            held = HOLD_UNLOAD.1.wait(held).unwrap_or_else(|e| e.into_inner());
         }
     }
     let epoch = ACTIVE_EPOCH.load(Relaxed);

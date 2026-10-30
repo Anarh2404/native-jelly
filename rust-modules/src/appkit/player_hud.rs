@@ -1135,7 +1135,7 @@ fn failure_glyph(kind: crate::player::FailureKind) -> crate::ui::icons::Icon {
     match kind {
         K::DecisionRefused | K::NoVideoTranscodeTarget => Icon::ServerBadgeXmark,
         K::JailMissingRtkmem => Icon::LockBadgeAlert,
-        K::LoadTimeout => Icon::ClockBadgeAlert,
+        K::LoadTimeout | K::ReleaseTimeout => Icon::ClockBadgeAlert,
         _ => Icon::Alert,
     }
 }

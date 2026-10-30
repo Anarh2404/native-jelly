@@ -79,12 +79,26 @@ struct RetryContext {
 /// asserted: a frame's draw cannot hold one across [`apply_plan`] or [`request_play`], because
 /// those take `&mut`.
 
+/// Why the last native start was refused with no Engine built ([`PlaybackSession::native_start_refused`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StartRefusal {
+    /// A timed-out Load is still inside `sf_load` (an `AbandonedLoad` owns the one native object).
+    LoadTimeout,
+    /// The previous object's off-frame `Unload` outlived `player::release::RELEASE_DEADLINE`.
+    ReleaseTimeout,
+}
+
 pub(crate) struct PlaybackSession {
     /// Frozen for one logical playback, including its retries and track changes.
     direct_play_mode: DirectPlayMode,
     /// This playback was refused by the cached device sandbox preflight. No Engine exists.
     /// Cleared with the playback verdict on exit/reset, never a process-global error latch.
     pub(crate) jail_load_blocked: bool,
+    /// A native start was refused and no Engine exists to say why: `player::state` derives `Error`
+    /// from it, with the refusal's own cause. A start QUEUED behind a still-running `Unload` is not
+    /// stored here: the release machine owns that fact and `player::state` reads what the adapter
+    /// publishes of it. Cleared by the next start that is not refused and with the playback verdict.
+    pub(crate) native_start_refused: Option<StartRefusal>,
     /// Error retained after releasing a terminal Engine; retired by a new request or stop.
     engine_failure: Option<crate::player::RuntimeFailure>,
     /// Read-only publication of Player.repair for the HUD. Never authorizes a resource effect.
@@ -415,6 +429,7 @@ impl PlaybackSession {
     pub(crate) const IDLE: PlaybackSession = PlaybackSession {
         direct_play_mode: DirectPlayMode::Auto,
         jail_load_blocked: false,
+        native_start_refused: None,
         engine_failure: None,
         repair_status: nj_platform::tv::sandbox::State::Idle,
         request: None,
@@ -492,6 +507,7 @@ impl PlaybackSession {
         let PlaybackSession {
             direct_play_mode,
             jail_load_blocked,
+            native_start_refused,
             engine_failure,
             repair_status,
             request,
@@ -550,6 +566,7 @@ impl PlaybackSession {
         PlaybackSession {
             direct_play_mode: *direct_play_mode,
             jail_load_blocked: *jail_load_blocked,
+            native_start_refused: *native_start_refused,
             engine_failure: *engine_failure,
             repair_status: *repair_status,
             request: request.clone(),
@@ -833,6 +850,14 @@ impl std::fmt::Debug for ClaimSnapshot {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct RouteStartTransaction {
     serial: u64,
+}
+
+impl RouteStartTransaction {
+    /// A transaction identity for a pure machine's unit tests.
+    #[cfg(test)]
+    pub(crate) const fn fixture(serial: u64) -> Self {
+        Self { serial }
+    }
 }
 
 /// Synchronous result of the native half of a prepared route transition.
@@ -4358,6 +4383,7 @@ fn clear_play_verdict(ps: &mut PlaybackSession) {
     { let s = &mut *ps; {
         s.play_verdict = None;
         s.jail_load_blocked = false;
+        s.native_start_refused = None;
         s.engine_failure = None;
         s.resolve_failed = false;
         s.requested_resume_ns = 0;
@@ -6395,6 +6421,7 @@ fn request_play_inner(
         // a resolve that never lands (a refused spawn) would leave nothing else to clear it.
         s.play_verdict = None;
         s.jail_load_blocked = false;
+        s.native_start_refused = None;
         s.engine_failure = None;
         s.resolve_failed = false;
     } };
@@ -6927,6 +6954,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::Meta
         *s = PlaybackSession {
             direct_play_mode: plan.direct_play_mode,
             jail_load_blocked: false,
+            native_start_refused: None,
             engine_failure: None,
             repair_status: nj_platform::tv::sandbox::State::Idle,
             request,
