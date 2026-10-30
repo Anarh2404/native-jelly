@@ -191,6 +191,111 @@ pub fn join(what: &str, h: JoinHandle<()>) {
     }
 }
 
+/// What a [`Beside`] still owes: the work (not run yet, or its thread was refused) or its answer.
+enum Work<'scope, T> {
+    Todo(Box<dyn FnOnce() -> T + Send + 'scope>),
+    Done(T),
+    Taken,
+}
+
+/// A request asked for BESIDE the caller's own, on a scoped sibling thread ([`beside`]).
+///
+/// Where [`spawn`] starts a detached worker that outlives its caller, this is structured: the
+/// thread belongs to a [`std::thread::scope`], so the closure may borrow what the scope's caller
+/// borrows, and the scope joins the thread on EVERY exit of the scope body — an early `return`
+/// and a panic included — so a request started here cannot be left running behind a result that
+/// was built without it. Reading the answer is [`Beside::finish`].
+pub struct Beside<'scope, T> {
+    thread: Option<std::thread::ScopedJoinHandle<'scope, ()>>,
+    work: std::sync::Arc<std::sync::Mutex<Work<'scope, T>>>,
+}
+
+/// Ask for `f`'s answer on a scoped sibling thread named `what`, to be read with
+/// [`Beside::finish`] once the caller's own work is done. Use it for requests that need nothing
+/// from each other, so the caller waits for the slower of them rather than for the sum.
+///
+/// **A refused thread is not a lost answer**: unlike [`spawn`], which drops the work, the closure
+/// is kept and `finish` runs it on the caller's thread (the serial order it had before it was
+/// asked beside), and the refusal is logged. **A panic in `f` is the caller's panic**: `finish`
+/// re-raises it, as the same call made inline would have; nothing is swallowed into a default.
+///
+/// Only the borrows of the scope's CALLER can be captured (a thread started inside the scope body
+/// cannot borrow the body's own locals) — move owned copies in. Call it as
+/// `nj_base::task::beside(..)`.
+pub fn beside<'scope, 'env, T, F>(
+    s: &'scope std::thread::Scope<'scope, 'env>,
+    what: &str,
+    f: F,
+) -> Beside<'scope, T>
+where
+    T: Send + 'scope,
+    F: FnOnce() -> T + Send + 'scope,
+{
+    beside_with(s, what, None, f)
+}
+
+fn beside_with<'scope, 'env, T, F>(
+    s: &'scope std::thread::Scope<'scope, 'env>,
+    what: &str,
+    stack: Option<usize>,
+    f: F,
+) -> Beside<'scope, T>
+where
+    T: Send + 'scope,
+    F: FnOnce() -> T + Send + 'scope,
+{
+    use std::sync::{Arc, Mutex};
+    // The lock is never held while `f` runs, so a panic in `f` cannot poison it.
+    fn lock<'a, 'scope, T>(work: &'a Mutex<Work<'scope, T>>) -> std::sync::MutexGuard<'a, Work<'scope, T>> {
+        work.lock().unwrap_or_else(|e| e.into_inner())
+    }
+    fn run<T>(work: &Mutex<Work<'_, T>>) {
+        let todo = match std::mem::replace(&mut *lock(work), Work::Taken) {
+            Work::Todo(f) => f,
+            other => {
+                *lock(work) = other;
+                return;
+            }
+        };
+        let answer = todo();
+        *lock(work) = Work::Done(answer);
+    }
+    let work = Arc::new(Mutex::new(Work::Todo(Box::new(f) as Box<dyn FnOnce() -> T + Send + 'scope>)));
+    let mut b = Builder::new().name(what.to_string());
+    if let Some(n) = stack {
+        b = b.stack_size(n);
+    }
+    let worker = Arc::clone(&work);
+    let thread = match b.spawn_scoped(s, move || run(&worker)) {
+        Ok(h) => Some(h),
+        Err(e) => {
+            crate::eventlog::log(&format!(
+                "task: spawn '{what}' REFUSED ({e}) — asking for it on the caller's thread instead"
+            ));
+            None
+        }
+    };
+    Beside { thread, work }
+}
+
+impl<T> Beside<'_, T> {
+    /// The answer: waits for the sibling thread, or — when its thread was refused — asks here.
+    /// Re-raises a panic of the work.
+    pub fn finish(self) -> T {
+        if let Some(h) = self.thread {
+            if let Err(panic) = h.join() {
+                std::panic::resume_unwind(panic);
+            }
+        }
+        let work = std::mem::replace(&mut *self.work.lock().unwrap_or_else(|e| e.into_inner()), Work::Taken);
+        match work {
+            Work::Done(answer) => answer,
+            Work::Todo(f) => f(),
+            Work::Taken => unreachable!("a Beside is finished once, and its work ran once"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::mpsc;
@@ -251,5 +356,81 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         assert!(super::spawn_small("probe", move || tx.send(7).unwrap()));
         assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(5)), Ok(7));
+    }
+
+    /// A sibling asked for beside the caller's work is running while the caller works: the caller
+    /// parks on a channel only the sibling can feed, so a `beside` that ran the work later (or
+    /// inline, serially) would never get the answer.
+    #[test]
+    fn a_beside_request_runs_while_the_caller_works() {
+        let (tx, rx) = mpsc::channel();
+        let answer = std::thread::scope(|s| {
+            let sibling = super::beside(s, "beside-probe", move || {
+                tx.send(7).unwrap();
+                "asked"
+            });
+            assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(5)), Ok(7), "the sibling never ran beside us");
+            sibling.finish()
+        });
+        assert_eq!(answer, "asked");
+    }
+
+    /// The closure may borrow what the scope's caller borrows, and the thread carries its label.
+    #[test]
+    fn a_beside_request_borrows_the_callers_data_and_carries_its_name() {
+        let owned = String::from("borrowed");
+        let (len, name) = std::thread::scope(|s| {
+            super::beside(s, "beside-name", || (owned.len(), std::thread::current().name().map(str::to_owned))).finish()
+        });
+        assert_eq!((len, name.as_deref()), (8, Some("beside-name")));
+    }
+
+    /// The OS-refused arm: the thread cannot start, and the work is NOT dropped (unlike `spawn`) —
+    /// `finish` runs it, here, exactly once.
+    #[test]
+    fn a_refused_beside_thread_is_asked_on_the_callers_thread() {
+        let ran = std::sync::atomic::AtomicU32::new(0);
+        let caller = std::thread::current().id();
+        let (answer, on_caller) = std::thread::scope(|s| {
+            let sibling = super::beside_with(s, "unsatisfiable", Some(usize::MAX / 2), || {
+                ran.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                (9, std::thread::current().id())
+            });
+            let (answer, ran_on) = sibling.finish();
+            (answer, ran_on == caller)
+        });
+        assert_eq!(answer, 9);
+        assert!(on_caller, "a refused thread asks on the caller's thread");
+        assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 1, "and exactly once");
+    }
+
+    /// A panic in the sibling's work is the caller's panic at `finish`, as the same call made
+    /// inline would have been, and not a default that hides it.
+    #[test]
+    fn a_beside_panic_is_reraised_at_finish() {
+        let outcome = std::panic::catch_unwind(|| {
+            std::thread::scope(|s| {
+                let sibling = super::beside(s, "beside-panic", || -> u8 { panic!("sibling work") });
+                sibling.finish()
+            })
+        });
+        let panic = outcome.expect_err("finish must re-raise");
+        assert_eq!(panic.downcast_ref::<&str>().copied(), Some("sibling work"));
+    }
+
+    /// The scope joins a sibling its owner never `finish`ed: an early return out of the scope body
+    /// cannot leave the request running behind the result.
+    #[test]
+    fn a_beside_request_never_finished_is_still_joined_by_the_scope() {
+        let done = std::sync::atomic::AtomicBool::new(false);
+        let early: Option<()> = std::thread::scope(|s| {
+            let _dropped = super::beside(s, "beside-slow", || {
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                done.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+            None
+        });
+        assert!(early.is_none());
+        assert!(done.load(std::sync::atomic::Ordering::SeqCst), "the scope returned before the sibling finished");
     }
 }

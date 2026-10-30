@@ -12,6 +12,8 @@
 #![allow(dead_code)]
 
 mod client;
+#[cfg(test)]
+pub(crate) mod rendezvous_test_support;
 pub(crate) mod identity; // ONE device identity (product/version/device) reported to the catalog server
 mod models;
 mod params;

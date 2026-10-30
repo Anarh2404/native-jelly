@@ -754,9 +754,12 @@ struct SourceBuild {
 /// was aimed at even if the registry re-points that slot mid-request.
 fn fetch_source(c: &crate::catalog::Client, sid: ServerId) -> Option<SourceBuild> {
     if let Some(j) = c.jf() {
-        let shelves = j.home_shelves(HUB_FETCH_COUNT)?;
-        let cw = j.continue_watching_items(HUB_FETCH_COUNT)?;
-        return Some(project_jf(&shelves, &cw, sid));
+        // Continue Watching and the shelves need nothing from each other: asked together.
+        let (shelves, cw) = std::thread::scope(|s| {
+            let cw = nj_base::task::beside(s, "home-continue", || j.continue_watching_items(HUB_FETCH_COUNT));
+            (j.home_shelves(HUB_FETCH_COUNT), cw.finish())
+        });
+        return Some(project_jf(&shelves?, &cw?, sid));
     }
     let mc = c.home_hubs(HUB_FETCH_COUNT)?;
     // The Continue Watching shelf comes from the DEDICATED hub (see `project`). Its failure fails
@@ -2299,4 +2302,40 @@ pub(crate) fn edit_test_hub_card(state: &mut PmsState, row: usize, col: usize, r
     item.title = title.into();
     let build = merge(&state.srcs);
     commit(state, build);
+}
+
+#[cfg(test)]
+#[cfg(feature = "devtriggers")]
+mod beside_tests {
+    use crate::catalog::rendezvous_test_support::Rendezvous;
+
+    const A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    fn answer(path: &str) -> String {
+        if path.starts_with("/UserViews") {
+            return format!(
+                r#"{{"Items":[{{"Id":"{A}","Name":"Films","Type":"CollectionFolder","CollectionType":"movies"}},{{"Id":"{B}","Name":"Shows","Type":"CollectionFolder","CollectionType":"tvshows"}}],"TotalRecordCount":2}}"#
+            );
+        }
+        if path.starts_with("/Items/Latest") {
+            return "[]".into();
+        }
+        r#"{"Items":[],"TotalRecordCount":0}"#.into()
+    }
+
+    /// Home asks Continue Watching beside the shelves, and each library's Recently Added beside the
+    /// others, so a cold Home costs the slowest of them rather than the sum.
+    #[test]
+    fn home_asks_its_independent_requests_together() {
+        let _g = nj_base::testlock::serial();
+        assert!(nj_net::net::global_init());
+        let server = Rendezvous::start(
+            &[("/UserItems/Resume", "/UserViews"), ("ParentId=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "ParentId=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")],
+            answer,
+        );
+        let client = crate::catalog::client_for(server.sid).unwrap();
+        assert!(super::fetch_source(client, server.sid).is_some(), "{:?}", server.seen());
+        assert_eq!(server.missed(), Vec::<String>::new(), "asked one after another: {:?}", server.seen());
+    }
 }

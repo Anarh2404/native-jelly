@@ -3333,86 +3333,84 @@ fn fetch_full(sid: crate::catalog::ServerId, rk: &str) -> Option<Detail> {
     // `client_for(sid)?.metadata(rk)?`, so this arm is also taken when the server id resolves to no
     // client at all and no request was ever issued. One line for both is right — the page is equally
     // empty either way — but it must not assert a round trip that may not have happened.
-    let Some((mut d, primary_extra_key)) = fetch_detail(sid, rk) else {
-        nj_base::eventlog::log(&format!(
-            "detail: rk={rk} sid={sid:?} — no metadata (server unresolved, or it refused)"
-        ));
-        return None;
-    };
-    if d.is_show {
-        d.seasons = fetch_seasons(sid, rk);
-        if let Some(s0) = d.seasons.first() {
-            // a first-season failure is not worth failing the whole page over — the hero, cast
-            // and Related still load, and there is no previous list here to protect. It is still
-            // named, because the `eps=` below cannot tell it from a season with no episodes.
-            d.episodes = fetch_episodes(sid, &s0.rk).unwrap_or_else(|| {
-                nj_base::eventlog::log(&format!(
-                    "detail: rk={rk} season rk={} /children did not answer — the eps= below is that refusal",
-                    s0.rk));
-                Vec::new()
+    // `/related` needs only the key, so it goes beside the item; the scope joins it on every exit.
+    let (d, extras_src) = std::thread::scope(|s| {
+        let related = nj_base::task::beside(s, "detail-related", || fetch_related(sid, rk));
+        let Some((mut d, primary_extra_key)) = fetch_detail(sid, rk) else {
+            nj_base::eventlog::log(&format!(
+                "detail: rk={rk} sid={sid:?} — no metadata (server unresolved, or it refused)"
+            ));
+            return None;
+        };
+        if d.is_show {
+            // The seasons and the on-deck episode's streams need nothing from each other: asked together.
+            let hero_ep = d.on_deck.as_ref().map(|e| e.rk.clone());
+            std::thread::scope(|s| {
+                let seasons = nj_base::task::beside(s, "detail-seasons", || fetch_seasons(sid, rk));
+                if let Some(ep_rk) = &hero_ep {
+                    fetch_item_streams(sid, ep_rk, &mut d);
+                }
+                d.seasons = seasons.finish();
             });
-        }
-        // A show carries no streams itself — backfill from ONE episode: the one the hero is
-        // about, which is the one Play starts (`on_deck` when the show has been started, else
-        // its first). Everything downstream reads this as "the show's" media, so borrowing from
-        // a different episode than the button plays would have the chips, the About footer and
-        // "how this plays" describing a file the user is not about to watch.
-        let hero_ep = d.on_deck.as_ref().map(|e| e.rk.clone());
-        let ep = hero_ep.or_else(|| d.episodes.first().map(|e| e.rk.clone()));
-        if let Some(ep_rk) = ep {
-            fetch_item_streams(sid, &ep_rk, &mut d);
-            // NB `part`/`vcodec`/`acodec` are deliberately NOT backfilled. They are the item's OWN
-            // playable file, and "a show has an empty part" is load-bearing elsewhere — `app.rs`'s
-            // play trigger reads it as "this is a show, take the episode's resume point instead",
-            // so filling it here would silently hand a show's duration to an episode's playback.
-            // A consumer that wants to know how the HERO's episode will play asks the episode
-            // (`ui::detail::draw_play_mode`), which is also the only place that knows which
-            // episode the button would start.
-        }
-    }
-    // Movie/show: extras GET overlaps `/related` on a sibling thread so serial depth stays 2 / 5.
-    // Episode/season pages never show the Trailer control, so they must not pay extras I/O.
-    // Spawn failure omits the trailer rather than adding a serial extras hop behind related.
-    let extras_src: &'static str;
-    if extras_wanted(&d.kind) {
-        let (related, extras) = std::thread::scope(|s| {
-            let extras_h = std::thread::Builder::new()
-                .name("detail-extras".into())
-                .spawn_scoped(s, || fetch_extras_rows(sid, rk));
-            let related = fetch_related(sid, rk);
-            let extras = match extras_h {
-                Ok(h) => h.join().ok().flatten(),
-                Err(_) => None,
-            };
-            (related, extras)
-        });
-        d.related = related.related;
-        d.collection = related.collection;
-        match extras {
-            Some(rows) => {
-                extras_src = "extras";
-                project_extras(&mut d, sid, &rows, &primary_extra_key);
+            if let Some(s0) = d.seasons.first() {
+                // a first-season failure is not worth failing the whole page over — the hero, cast
+                // and Related still load, and there is no previous list here to protect. It is still
+                // named, because the `eps=` below cannot tell it from a season with no episodes.
+                d.episodes = fetch_episodes(sid, &s0.rk).unwrap_or_else(|| {
+                    nj_base::eventlog::log(&format!(
+                        "detail: rk={rk} season rk={} /children did not answer — the eps= below is that refusal",
+                        s0.rk));
+                    Vec::new()
+                });
             }
-            None => {
-                // Refused extras GET: still try the parent's `primaryExtraKey` (one metadata GET)
-                // so a blip on `/extras` does not hide a trailer the parent already named.
-                // An empty extras *list* is a real answer and must not do this. The filled
-                // trailer is also the shelf's one tile.
-                if let Some(e) = fetch_primary_trailer(sid, &primary_extra_key) {
-                    d.trailer_rk = e.rk.clone();
-                    d.extras = vec![e];
-                    extras_src = "primary";
-                } else {
-                    extras_src = "none";
+            // A show carries no streams itself — backfill from ONE episode: the one the hero is
+            // about, which is the one Play starts (`on_deck` when the show has been started, else
+            // its first). Everything downstream reads this as "the show's" media, so borrowing from
+            // a different episode than the button plays would have the chips, the About footer and
+            // "how this plays" describing a file the user is not about to watch.
+            if let Some(ep_rk) = d.episodes.first().map(|e| e.rk.clone()).filter(|_| hero_ep.is_none()) {
+                fetch_item_streams(sid, &ep_rk, &mut d);
+                // NB `part`/`vcodec`/`acodec` are deliberately NOT backfilled. They are the item's OWN
+                // playable file, and "a show has an empty part" is load-bearing elsewhere — `app.rs`'s
+                // play trigger reads it as "this is a show, take the episode's resume point instead",
+                // so filling it here would silently hand a show's duration to an episode's playback.
+                // A consumer that wants to know how the HERO's episode will play asks the episode
+                // (`ui::detail::draw_play_mode`), which is also the only place that knows which
+                // episode the button would start.
+            }
+        }
+        // Movie/show: the extras GET overlaps `/related`, already in flight. Episode/season pages never
+        // show the Trailer control, so they must not pay extras I/O. A refused thread asks on this one.
+        let extras_src: &'static str;
+        if extras_wanted(&d.kind) {
+            let extras = nj_base::task::beside(s, "detail-extras", || fetch_extras_rows(sid, rk)).finish();
+            match extras {
+                Some(rows) => {
+                    extras_src = "extras";
+                    project_extras(&mut d, sid, &rows, &primary_extra_key);
+                }
+                None => {
+                    // Refused extras GET: still try the parent's `primaryExtraKey` (one metadata GET)
+                    // so a blip on `/extras` does not hide a trailer the parent already named.
+                    // An empty extras *list* is a real answer and must not do this. The filled
+                    // trailer is also the shelf's one tile.
+                    if let Some(e) = fetch_primary_trailer(sid, &primary_extra_key) {
+                        d.trailer_rk = e.rk.clone();
+                        d.extras = vec![e];
+                        extras_src = "primary";
+                    } else {
+                        extras_src = "none";
+                    }
                 }
             }
+        } else {
+            extras_src = "skip";
         }
-    } else {
-        extras_src = "skip";
-        let related = fetch_related(sid, rk);
+        let related = related.finish();
         d.related = related.related;
         d.collection = related.collection;
-    }
+        Some((d, extras_src))
+    })?;
     // The item's IDENTITY and the SHAPE of what came back — never its title. `scrub_local` runs
     // on every line in every build, but nothing in a line distinguishes a programme title from
     // ordinary prose (`eventlog::scrub`'s `a_bare_quoted_title_is_explicitly_out_of_scope_for_the_scrubber`),
@@ -5263,3 +5261,41 @@ mod watch_state_tests;
 #[cfg(test)]
 #[path = "metadata_credits_tests.rs"]
 mod credits_tests;
+
+#[cfg(test)]
+#[cfg(feature = "devtriggers")]
+mod beside_tests {
+    use crate::catalog::rendezvous_test_support::Rendezvous;
+
+    const G: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const EP: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    fn answer(path: &str) -> String {
+        if path.starts_with(&format!("/Items/{G}?")) {
+            return format!(r#"{{"Id":"{G}","Name":"t","Type":"Movie"}}"#);
+        }
+        r#"{"Items":[],"TotalRecordCount":0}"#.into()
+    }
+
+    /// The page's Related is on the wire while the item is, so a movie page costs the slower of the
+    /// two rather than the sum.
+    #[test]
+    fn related_is_asked_beside_the_item() {
+        let _g = nj_base::testlock::serial();
+        assert!(nj_net::net::global_init());
+        let server = Rendezvous::start(&[("/Similar", "/MediaSegments/")], answer);
+        let d = super::fetch_full(server.sid, &crate::jf::ids::rating_key(G));
+        assert!(d.is_some(), "the fixture item must load: {:?}", server.seen());
+        assert_eq!(server.missed(), Vec::<String>::new(), "asked one after another: {:?}", server.seen());
+    }
+
+    /// A refused item still ends the page cleanly: the sibling is joined, nothing lands.
+    #[test]
+    fn a_refused_item_returns_nothing_with_related_joined() {
+        let _g = nj_base::testlock::serial();
+        assert!(nj_net::net::global_init());
+        fn refuse(_: &str) -> String { "not json".into() }
+        let server = Rendezvous::start(&[], refuse);
+        assert!(super::fetch_full(server.sid, &crate::jf::ids::rating_key(EP)).is_none());
+    }
+}

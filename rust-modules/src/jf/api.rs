@@ -629,18 +629,28 @@ impl<'a> Jf<'a> {
     pub fn home_shelves(&self, count: i64) -> Option<Vec<JfShelf>> {
         let uid = self.user_id()?;
         let views: QueryResult<BaseItemDto> = self.get(&Q::new("/UserViews").s("userId", &uid).build())?;
+        // One `/Items/Latest` per library, asked together; the shelves keep the libraries' order.
+        let latest = std::thread::scope(|s| {
+            let asks: Vec<_> = views.items.iter().filter_map(|v| {
+                let sec = convert::section(v)?;
+                let parent = ids::normalize(&v.id);
+                let uid = uid.as_str();
+                Some((sec, nj_base::task::beside(s, "home-latest", move || -> Option<Vec<BaseItemDto>> {
+                    self.get(&Q::new("/Items/Latest").s("userId", uid)
+                        .s("ParentId", &parent).i("Limit", count).b("GroupItems", true)
+                        .s("Fields", LIST_FIELDS).s("ImageTypeLimit", "1")
+                        .s("EnableImageTypes", "Primary,Backdrop,Logo,Thumb").build())
+                })))
+            }).collect();
+            asks.into_iter().map(|(sec, ask)| (sec, ask.finish())).collect::<Vec<_>>()
+        });
         let mut out = Vec::new();
-        for v in &views.items {
-            let Some(sec) = convert::section(v) else { continue };
+        for (sec, latest) in latest {
             let section: i64 = sec.key.parse().unwrap_or(0);
             let (identifier, type_num) = match sec.kind.as_str() {
                 "show" => ("home.television.recent", 2),
                 _ => ("home.movies.recent", 1),
             };
-            let latest: Option<Vec<BaseItemDto>> = self.get(&Q::new("/Items/Latest").s("userId", &uid)
-                .s("ParentId", &ids::normalize(&v.id)).i("Limit", count).b("GroupItems", true)
-                .s("Fields", LIST_FIELDS).s("ImageTypeLimit", "1")
-                .s("EnableImageTypes", "Primary,Backdrop,Logo,Thumb").build());
             let items = latest.unwrap_or_default();
             if !items.is_empty() {
                 out.push(JfShelf {

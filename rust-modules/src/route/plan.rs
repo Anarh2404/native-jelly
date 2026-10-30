@@ -1063,6 +1063,24 @@ pub(crate) struct Plan {
 }
 
 
+/// The two reads a play start can ask side by side. No queue for a preview or a part-only play.
+fn queue_and_playing(
+    client: &crate::catalog::Client,
+    rk: &str,
+    part: &str,
+    env: &ResolveEnv,
+) -> (Option<super::decision::QueueInfo>, Option<crate::metadata::PlayingItem>) {
+    std::thread::scope(|s| {
+        let queue = (!rk.is_empty() && !env.preview).then(|| {
+            nj_base::task::beside(s, "play-queue", || {
+                resolve_playqueue(client, rk, &env.machine_id, !env.omit_queue_continuous)
+            })
+        });
+        let playing = env.cached_item.clone().or_else(|| crate::metadata::fetch_playing_item(env.sid, rk, part));
+        (queue.map(|q| q.finish()), playing)
+    })
+}
+
 /// Pick the stream for an item with ONE Jellyfin negotiation (`POST /Items/{id}/PlaybackInfo`):
 /// offer direct play when the pipeline can feed the file itself, and let the server answer with
 /// the method it will serve — `DirectPlay` (the file's own bytes) or `Transcode` (its
@@ -1105,20 +1123,18 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // every report and the encoder stop name the playback through it.
     let session = new_sess(rk);
     plan.sess = session.clone();
-    if !rk.is_empty() && !env.preview {
-        let q = resolve_playqueue(client, rk, &env.machine_id, !env.omit_queue_continuous);
+    // The queue and the playing item's OWN track lists (menu + audio pick + esInfo fps read them —
+    // the loaded detail can be a different item: show page, straight-from-Home play) need nothing
+    // from each other, so they are asked together.
+    let (queue, playing) = queue_and_playing(client, rk, part, env);
+    if let Some(q) = queue {
         plan.machine_id = q.machine_id;
         plan.pq_id = q.id;
         plan.pq_item_id = q.item_id;
         plan.up_next = q.up_next;
         plan.queue = q.rows;
     }
-    // the playing item's OWN track lists (menu + audio pick + esInfo fps read them) — the loaded
-    // detail can be a different item (show page / straight-from-Home play)
-    plan.playing = env
-        .cached_item
-        .clone()
-        .or_else(|| crate::metadata::fetch_playing_item(env.sid, rk, part));
+    plan.playing = playing;
     if let (Some(id), Some(item)) = (env.subtitle_override, plan.playing.as_mut()) {
         // The retry's explicit selection owns both embedded and sidecar restoration; a stale
         // selection must not turn subtitles back on after the viewer chose Off.
@@ -2027,3 +2043,33 @@ mod av1_tests;
 #[cfg(test)]
 #[path = "plan_codec_agreement_tests.rs"]
 mod codec_agreement_tests;
+
+#[cfg(test)]
+#[cfg(feature = "devtriggers")]
+mod beside_tests {
+    use crate::catalog::rendezvous_test_support::Rendezvous;
+
+    const G: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    fn answer(path: &str) -> String {
+        if path.starts_with(&format!("/Items/{G}?")) {
+            return format!(r#"{{"Id":"{G}","Name":"t","Type":"Movie"}}"#);
+        }
+        r#"{"Items":[],"TotalRecordCount":0}"#.into()
+    }
+
+    /// A play start's queue read and its item read are on the wire together.
+    #[test]
+    fn a_play_start_asks_the_queue_beside_the_item() {
+        let _g = nj_base::testlock::serial();
+        assert!(nj_net::net::global_init() && crate::curlio::available());
+        // Only the queue's read names `Fields=MediaSources`; only the item's goes on to its segments.
+        let server = Rendezvous::start(&[("Fields=MediaSources", "/MediaSegments/")], answer);
+        let client = crate::catalog::client_for(server.sid).unwrap();
+        let rk = crate::jf::ids::rating_key(G);
+        let env = super::ResolveEnv { sid: server.sid, ..Default::default() };
+        let (queue, playing) = super::queue_and_playing(client, &rk, "", &env);
+        assert!(queue.is_some() && playing.is_some(), "{:?}", server.seen());
+        assert_eq!(server.missed(), Vec::<String>::new(), "asked one after another: {:?}", server.seen());
+    }
+}
