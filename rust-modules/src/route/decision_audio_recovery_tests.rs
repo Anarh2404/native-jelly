@@ -38,10 +38,11 @@ fn refused_direct_play(ps: &mut PlaybackSession, lb: &JfLoopback, contract: crat
         &rk,
     );
     assert!(!is_transcoding(ps));
-    let facts = OpenFacts { failure, audio: fed_audio(ps), seen_picture: false, forced: false, pending_original: false };
+    let facts = OpenFacts { failure, audio: fed_audio(ps), seen_picture: false, forced: false, pending_original: false,
+        video_native: video_fed_natively(ps), auto_original: false };
     match audio_recovery_failure(ps, &facts).action {
         Action::Convert(audio) => audio,
-        Action::Pass => panic!("a refused native Opus open is converted"),
+        other => panic!("a refused native Opus open is converted, not {other:?}"),
     }
 }
 
@@ -118,7 +119,7 @@ fn a_refused_conversion_spends_the_rung_and_the_next_request_starts_fresh() {
     assert!(!is_transcoding(&ps), "the route is not replaced");
     assert_eq!(stream_acodec(&ps), "opus");
     assert!(ps.audio_recovery.spent());
-    let again = OpenFacts { failure: OpenFailure::Refused { num: Some(200) }, audio: fed_audio(&ps), seen_picture: false, forced: false, pending_original: false };
+    let again = OpenFacts { failure: OpenFailure::Refused { num: Some(200) }, audio: fed_audio(&ps), seen_picture: false, forced: false, pending_original: false, video_native: false, auto_original: false };
     assert_eq!(audio_recovery_failure(&mut ps, &again).action, Action::Pass, "no second conversion");
 
     test_support::apply_plan(&mut ps, Plan { sid, url: "http://127.0.0.1/next".into(), ..Default::default() }, &jf_rk());
@@ -161,4 +162,39 @@ fn a_direct_play_error_in_the_answer_still_copies_the_video() {
     assert_eq!(audio_recovery_first_picture(&mut ps), Some(Record::Proof(audio)));
     reset_session(&mut ps);
     install_active_encoder("");
+}
+
+/// A refused video is asked for again as an encode under 1080p, at the request's position, with no
+/// copy of the video allowed; the session reads as an encode afterwards, so the rung cannot refire.
+#[test]
+fn a_refused_video_is_encoded_under_the_1080p_ceiling() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let lb = JfLoopback::start(
+        playback_info(false, "mkv", H264_TWO_OPUS, Some(&conversion_url("VideoCodecNotSupported"))),
+        user_config(None, true, None, "Default"),
+    );
+    let _ = refused_direct_play(&mut ps, &lb, Default::default(), OpenFailure::Refused { num: Some(601) });
+    assert!(video_fed_natively(&ps));
+    assert!(encode_refused_video(&mut ps, 90).is_some(), "the server encodes");
+    let body = playback_info_body(&lb.finish());
+    assert_eq!(body["AllowVideoStreamCopy"], false, "the refused video is not offered again");
+    assert_eq!(body["StartTimeTicks"], 900_000_000i64, "at the request's position");
+    assert!(body["MaxStreamingBitrate"].as_i64().is_some_and(|rate| rate <= 20_000_000), "{body}");
+    assert_eq!(body["AudioStreamIndex"], 2, "the viewer's track");
+    assert!(!video_fed_natively(&ps));
+    assert_eq!(cur_ceiling(&ps).map(|c| (c.max_w, c.max_h)), Some((1920, 1080)));
+
+    reset_session(&mut ps);
+    install_active_encoder("");
+}
+
+/// A lower ceiling the viewer picked stays; only what exceeds 1080p comes down.
+#[test]
+fn the_refused_video_ceiling_never_raises_a_route() {
+    use crate::catalog::Ceiling;
+    let low = Ceiling { max_kbps: 4_000, max_w: 1280, max_h: 720 };
+    assert_eq!(refused_video_ceiling(Some(low)), low);
+    assert_eq!(refused_video_ceiling(None), REFUSED_VIDEO_CEILING);
+    assert_eq!(refused_video_ceiling(Some(Ceiling { max_kbps: 80_000, max_w: 3840, max_h: 2160 })), REFUSED_VIDEO_CEILING);
 }

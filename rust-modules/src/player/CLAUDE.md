@@ -34,7 +34,9 @@ family-1 layouts require an exact typed debug-fixture override. Auto/Force routi
 Jellyfin profiles still withhold Opus. The groundwork is in: one capability snapshot per play
 attempt (`route::attempt_caps`, shared with the DeviceProfile), build-scoped refusal records, and
 one bounded audio-conversion recovery per request (`route::audio_recovery`, driven by
-`pump::recover_refused_audio`). Enabling waits on real-server and TV acceptance. See
+`pump::recover_refused_audio`), which also holds the one video rung: a manual pick's video refused
+before its first picture is encoded once under a 1080p ceiling. Enabling waits on real-server and
+TV acceptance. See
 `docs/opus.md` for its exact subset and verification limits; this is not yet a shipping
 direct-play capability.
 

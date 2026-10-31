@@ -605,17 +605,25 @@ fn recover_refused_audio(
         seen_picture: SHARED.seen_frame.load(Relaxed),
         forced: crate::route::forced_direct_play(ps),
         pending_original: crate::route::original_recovery_pending(),
+        video_native: crate::route::video_fed_natively(ps),
+        auto_original: crate::route::auto_original_watch(ps).is_some(),
     };
     let step = crate::route::audio_recovery_failure(ps, &facts);
     if let Some(record) = &step.record {
         record_audio_refusal(record);
     }
-    let Action::Convert(audio) = step.action else {
-        return None;
-    };
-    super::log(&format!("audio recovery: {failure:?} with native {} before any picture", audio.codec));
     let offset_secs = (super::intended_pos_ns(ps) / 1_000_000_000).max(0);
-    crate::route::convert_refused_audio(ps, &audio, offset_secs)?;
+    match step.action {
+        Action::Pass => return None,
+        Action::Convert(audio) => {
+            super::log(&format!("audio recovery: {failure:?} with native {} before any picture", audio.codec));
+            crate::route::convert_refused_audio(ps, &audio, offset_secs)?;
+        }
+        Action::EncodeVideo => {
+            super::log(&format!("video recovery: {failure:?} before any picture"));
+            crate::route::encode_refused_video(ps, offset_secs)?;
+        }
+    }
     Some(offset_secs * 1_000_000_000)
 }
 
@@ -668,7 +676,7 @@ fn reload_refused_audio(
 ) {
     let started = settle_reload(
         super::engine::reload_transcode(ps, pa, offset_ns),
-        "audio conversion after a native audio refusal",
+        "conversion after a native refusal",
     );
     if !started {
         crate::route::audio_recovery_reload_failed(ps);

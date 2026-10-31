@@ -22,6 +22,13 @@
 //! asked not to convert), never after a picture, and only for audio outside the codecs every set
 //! decodes ([`suspect`]) — converting AAC to AAC rescues nothing.
 //!
+//! **The video rung** (upstream #1065, #1077). A manual pick whose video the pipeline refuses before
+//! its first picture (a 4K H.264 at `num=100`) gets one encode under the 1080p ceiling instead of
+//! the read-out; so does an audio conversion refused with its video still copied, which keeps the
+//! audio converted and so tries both facets. Only an explicit pipeline refusal that does not name
+//! the audio reaches it. A cold Auto Original keeps its HLS contingency. A video facet proves
+//! nothing and is never stored: each play of such a file on a refusing set costs one refused Load.
+//!
 //! **What it teaches** (upstream #1034/#1061, refreshed against `b3d2b66c0`):
 //! * a refusal that NAMES the audio (`type=18 num=200`, or the feed's silent stall,
 //!   [`OpenFailure::Stalled`]) is recorded at once, applied from the next
@@ -94,6 +101,20 @@ pub(crate) struct OpenFacts {
     pub forced: bool,
     /// An HLS->Original trial holds a live encoder for exactly this outcome.
     pub pending_original: bool,
+    /// The pipeline was fed the source's own video: a direct play or a remux, not an encode.
+    pub video_native: bool,
+    /// A cold Auto Original: the ladder's HLS contingency owes the viewer the next route.
+    pub auto_original: bool,
+}
+
+impl OpenFacts {
+    /// May a refusal put the VIDEO under suspicion? Only an explicit pipeline refusal that does not
+    /// name the audio, before any picture, on a route the viewer did not forbid converting and with
+    /// no other way back waiting.
+    fn video_suspect(&self) -> bool {
+        matches!(self.failure, OpenFailure::Refused { num } if num != Some(NAMED_AUDIO_REFUSAL))
+            && !self.seen_picture && !self.forced && !self.pending_original && !self.auto_original
+    }
 }
 
 /// A refusal to record (the driver's IO, fire-and-forget).
@@ -112,6 +133,9 @@ pub(crate) enum Action {
     Pass,
     /// Convert this audio, video copied where permitted, at the request's intended position.
     Convert(FedAudio),
+    /// Encode the video under the 1080p ceiling, at the request's intended position. Any audio an
+    /// earlier rung took out of the attempt stays converted, so this is the both-facets rung too.
+    EncodeVideo,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -141,7 +165,9 @@ enum State {
     Idle,
     /// The conversion was asked for. `proof` is the audio an ambiguous refusal may prove once the
     /// landing changed only the audio; `loads` counts Loads since the landing.
-    Converting { audio: FedAudio, proof: Option<FedAudio>, landed: bool, loads: u32 },
+    Converting { audio: FedAudio, proof: Option<FedAudio>, landed: bool, loads: u32, video_copied: bool },
+    /// The video encode was asked for: the last rung, which teaches nothing either way.
+    EncodingVideo,
     /// The rung is used up for this request: a conversion played, failed or was proved.
     Spent,
 }
@@ -163,14 +189,27 @@ impl AudioRecovery {
         let pass = |record| Step { record, action: Action::Pass };
         // A failure of the conversion's own route (or any later one) never earns a second
         // conversion, and drops a proof still pending.
+        let copied_after_audio = matches!(self.state, State::Converting { video_copied: true, .. });
         if !matches!(self.state, State::Idle) {
+            // ...except that a conversion refused with its video still copied has not tried the
+            // video yet: the one both-facets encode.
+            if copied_after_audio && facts.video_suspect() {
+                self.state = State::EncodingVideo;
+                return Step { record: None, action: Action::EncodeVideo };
+            }
             self.state = State::Spent;
             return pass(None);
         }
         if facts.seen_picture {
             return pass(None);
         }
-        let Some(audio) = suspect(facts.audio.as_ref()).cloned() else { return pass(None) };
+        let Some(audio) = suspect(facts.audio.as_ref()).cloned() else {
+            if facts.video_native && facts.video_suspect() {
+                self.state = State::EncodingVideo;
+                return Step { record: None, action: Action::EncodeVideo };
+            }
+            return pass(None);
+        };
         let (record, ambiguous) = match facts.failure {
             OpenFailure::Refused { num: Some(NAMED_AUDIO_REFUSAL) } | OpenFailure::Stalled => {
                 let first = !std::mem::replace(&mut self.named, true);
@@ -188,6 +227,7 @@ impl AudioRecovery {
             audio: audio.clone(),
             landed: false,
             loads: 0,
+            video_copied: false,
         };
         Step { record, action: Action::Convert(audio) }
     }
@@ -195,8 +235,9 @@ impl AudioRecovery {
     /// The conversion's route was installed; `lanes` are the server's verdicts. The driver's
     /// reload onto it is the next Load.
     pub(crate) fn on_landed(&mut self, lanes: Lanes) {
-        if let State::Converting { proof, landed, .. } = &mut self.state {
+        if let State::Converting { proof, landed, video_copied, .. } = &mut self.state {
             *landed = true;
+            *video_copied = lanes.video_copied;
             if !lanes.audio_only() {
                 *proof = None;
             }
@@ -225,6 +266,10 @@ impl AudioRecovery {
         match &mut self.state {
             // A request that played without the rung keeps it for a later Engine's open.
             State::Idle | State::Spent => None,
+            State::EncodingVideo => {
+                self.state = State::Spent;
+                None
+            }
             State::Converting { proof, landed, loads, .. } => {
                 let proof = (*landed && *loads == 1).then(|| proof.take()).flatten();
                 self.state = State::Spent;
@@ -257,7 +302,8 @@ mod tests {
     }
 
     fn failed(failure: OpenFailure, audio: Option<FedAudio>) -> OpenFacts {
-        OpenFacts { failure, audio, seen_picture: false, forced: false, pending_original: false }
+        OpenFacts { failure, audio, seen_picture: false, forced: false, pending_original: false,
+            video_native: true, auto_original: false }
     }
 
     const NAMED: OpenFailure = OpenFailure::Refused { num: Some(NAMED_AUDIO_REFUSAL) };
@@ -313,6 +359,62 @@ mod tests {
         assert_eq!(m.on_first_picture(), None, "a Load before the landing is not the landing's");
     }
 
+    const VIDEO: OpenFailure = OpenFailure::Refused { num: Some(100) };
+    const ENCODE: Step = Step { record: None, action: Action::EncodeVideo };
+    const PASS: Step = Step { record: None, action: Action::Pass };
+
+    /// A refused video gets one encode, and teaches nothing whether it plays or not.
+    #[test]
+    fn a_refused_video_gets_one_encode_and_teaches_nothing() {
+        let aac = Some(FedAudio::new("aac", 2));
+        let mut m = AudioRecovery::default();
+        assert_eq!(m.on_failure(&failed(VIDEO, aac.clone())), ENCODE);
+        assert_eq!(m.on_failure(&failed(VIDEO, aac.clone())), PASS, "one per request");
+        let mut m = AudioRecovery::default();
+        assert_eq!(m.on_failure(&failed(OpenFailure::Refused { num: None }, None)), ENCODE, "no audio at all");
+        m.on_load_started();
+        assert_eq!(m.on_first_picture(), None, "a video facet never proves");
+        assert!(m.spent());
+    }
+
+    /// Everything else stays with the ladder.
+    #[test]
+    fn the_video_rung_answers_only_an_explicit_refusal_of_a_natively_fed_video() {
+        let aac = || Some(FedAudio::new("aac", 2));
+        let pass = |facts: OpenFacts| AudioRecovery::default().on_failure(&facts);
+        assert_eq!(pass(failed(NAMED, aac())), PASS, "num=200 names the audio, not the video");
+        assert_eq!(pass(failed(OpenFailure::TimedOut, aac())), PASS);
+        assert_eq!(pass(failed(OpenFailure::Stalled, aac())), PASS);
+        assert_eq!(pass(failed(OpenFailure::HeaderUnsupported, aac())), PASS);
+        assert_eq!(pass(OpenFacts { video_native: false, ..failed(VIDEO, aac()) }), PASS, "already an encode");
+        assert_eq!(pass(OpenFacts { seen_picture: true, ..failed(VIDEO, aac()) }), PASS);
+        assert_eq!(pass(OpenFacts { forced: true, ..failed(VIDEO, aac()) }), PASS);
+        assert_eq!(pass(OpenFacts { pending_original: true, ..failed(VIDEO, aac()) }), PASS);
+        assert_eq!(pass(OpenFacts { auto_original: true, ..failed(VIDEO, aac()) }), PASS, "its HLS contingency");
+    }
+
+    /// An audio conversion refused with its video still copied tries both facets, once; one whose
+    /// video was already encoded has nothing left to try.
+    #[test]
+    fn a_refused_conversion_with_copied_video_gets_one_both_facets_encode() {
+        let mut m = AudioRecovery::default();
+        m.on_failure(&failed(SHUT, opus(2)));
+        m.on_landed(COPIED_VIDEO);
+        m.on_load_started();
+        assert_eq!(m.on_failure(&failed(SHUT, None)), ENCODE);
+        assert_eq!(m.on_failure(&failed(SHUT, None)), PASS);
+
+        let mut m = AudioRecovery::default();
+        m.on_failure(&failed(SHUT, opus(2)));
+        m.on_landed(Lanes { video_copied: false, audio_copied: false });
+        assert_eq!(m.on_failure(&failed(SHUT, None)), PASS, "the video was already encoded");
+
+        let mut m = AudioRecovery::default();
+        m.on_failure(&failed(SHUT, opus(2)));
+        m.on_landed(COPIED_VIDEO);
+        assert_eq!(m.on_failure(&failed(NAMED, None)), PASS, "a refusal naming the audio is not the video's");
+    }
+
     /// The silent stall names the audio as `num=200` does: recorded at once, and converted once.
     #[test]
     fn a_silent_stall_is_named_evidence_and_converts_once() {
@@ -334,7 +436,7 @@ mod tests {
         m.on_landed(COPIED_VIDEO);
         m.on_load_started();
         let again = m.on_failure(&failed(SHUT, opus(2)));
-        assert_eq!(again, Step { record: None, action: Action::Pass }, "the conversion's own refusal reads out");
+        assert_eq!(again, ENCODE, "the conversion's own refusal, video still copied, tries the video");
         assert_eq!(m.on_first_picture(), None, "and its pending proof is gone");
         assert_eq!(m.on_failure(&failed(NAMED, opus(2))).action, Action::Pass);
 
@@ -385,7 +487,7 @@ mod tests {
         for (facts, why) in [
             (failed(OpenFailure::TimedOut, opus(2)), "a timeout names nothing"),
             (failed(NAMED, Some(FedAudio::new("aac", 2))), "AAC is decoded by every set"),
-            (failed(SHUT, Some(FedAudio::new("eac3", 6))), "nor E-AC-3"),
+            (OpenFacts { video_native: false, ..failed(SHUT, Some(FedAudio::new("eac3", 6))) }, "nor E-AC-3"),
             (failed(NAMED, None), "converted audio was fed"),
             (OpenFacts { seen_picture: true, ..failed(NAMED, opus(2)) }, "after a picture"),
         ] {

@@ -7688,6 +7688,62 @@ pub(crate) fn convert_refused_audio(
     }
 }
 
+/// The ceiling of a video the pipeline refused: 1080p at the top rung's rate. A route already under
+/// a lower ceiling keeps it.
+const REFUSED_VIDEO_CEILING: crate::catalog::Ceiling =
+    crate::catalog::Ceiling { max_kbps: 20_000, max_w: 1920, max_h: 1080 };
+
+fn refused_video_ceiling(current: Option<crate::catalog::Ceiling>) -> crate::catalog::Ceiling {
+    let top = REFUSED_VIDEO_CEILING;
+    current.map_or(top, |c| crate::catalog::Ceiling {
+        max_kbps: c.max_kbps.min(top.max_kbps),
+        max_w: c.max_w.min(top.max_w),
+        max_h: c.max_h.min(top.max_h),
+    })
+}
+
+/// Was the pipeline fed the source's own video? A direct play or a remux, never an encode.
+pub(crate) fn video_fed_natively(ps: &PlaybackSession) -> bool {
+    !is_transcoding(ps) || ps.cur_contract.remux
+}
+
+/// The video rung (`audio_recovery`): rebuild the route as an encode under the 1080p ceiling, at
+/// the request's position. The attempt's capabilities stay as they are, so audio an earlier rung
+/// took out stays converted. `None` spends the rung and leaves the failure to the ladder.
+pub(crate) fn encode_refused_video(ps: &mut PlaybackSession, offset_secs: i64) -> Option<String> {
+    let contract = crate::catalog::EncodeContract {
+        remux: false,
+        delivery: crate::catalog::TranscodeDelivery::ProgressiveMkv,
+        no_video_copy: true,
+        ceiling: Some(refused_video_ceiling(cur_ceiling(ps))),
+        audio: crate::catalog::AudioEnhancements::NONE,
+    };
+    let expected = worker_ticket();
+    let outcome = match prepare_retranscode_inputs(ps, &expected, offset_secs) {
+        Some(inputs) => {
+            let _block = pending_split_block();
+            try_retranscode(&inputs, contract)
+        }
+        None => RetranscodeWorkerOutcome::Refused,
+    };
+    match outcome {
+        RetranscodeWorkerOutcome::Applied(applied) => {
+            crate::player::log(&format!(
+                "video recovery: encoding under 1080p at {offset_secs}s; audio {}",
+                if applied.lanes.audio_copied { "copied" } else { "converted" },
+            ));
+            install_retranscode_outcome(ps, &applied);
+            stop_encoder_session(applied.client, applied.superseded);
+            Some(applied.url)
+        }
+        RetranscodeWorkerOutcome::Refused => {
+            crate::player::log("video recovery: the encode was refused");
+            ps.audio_recovery.on_conversion_failed();
+            None
+        }
+    }
+}
+
 // ---- issue #266: the live audio-enhancement state machine ------------------------------------
 //
 // The enhancement decorates the Original route: turning it on makes a Direct/Remux playback an
