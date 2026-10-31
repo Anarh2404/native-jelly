@@ -7602,6 +7602,15 @@ pub(crate) fn fed_audio(ps: &PlaybackSession) -> Option<super::audio_recovery::F
         .then(|| super::audio_recovery::FedAudio::new(&ps.stream_acodec, stream_achannels(ps)))
 }
 
+/// A route feeding this audio natively, for the pump's tests.
+#[cfg(all(test, feature = "hostsim"))]
+pub(crate) fn feed_native_audio_for_test(ps: &mut PlaybackSession, codec: &str, channels: i64) {
+    ps.stream_acodec = codec.into();
+    ps.cur_audio = Some(CarriedAudio::from_stream(&crate::metadata::Stream {
+        codec: codec.into(), channels, ..Default::default()
+    }, 0));
+}
+
 /// Hand a pre-picture failure to this request's recovery.
 pub(crate) fn audio_recovery_failure(
     ps: &mut PlaybackSession,

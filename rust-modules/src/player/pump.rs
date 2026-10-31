@@ -619,6 +619,46 @@ fn recover_refused_audio(
     Some(offset_secs * 1_000_000_000)
 }
 
+/// The native surround Opus watchdog ([`super::native_stall`]): true on the one frame it fires.
+/// The caller hands the audio to the recovery, whose named record is the learner.
+fn native_audio_stall_fired(ps: &crate::route::PlaybackSession, eng: &mut Engine, now: u32) -> bool {
+    use super::native_stall::{Probe, Step, NATIVE_AUDIO_STALL_MS};
+    let queue = |q: &Option<Box<crate::aq::AuQueue>>| {
+        q.as_ref().map_or(0, |q| crate::aq::aq_bytes(&**q as *const _ as *mut _) as i64)
+    };
+    let (qa, qv) = (queue(&eng.aq_audio), queue(&eng.aq_video));
+    let fed = crate::route::fed_audio(ps);
+    let channels = fed.as_ref().filter(|audio| audio.codec == "opus").map_or(0, |audio| audio.channels);
+    let (fed_video, fed_audio) = super::engine::fed_totals();
+    let probe = Probe {
+        now,
+        channels,
+        feed_open: TX.feed_allowed(),
+        load_returned: SHARED.native_load_returned(eng.native_epoch),
+        frames: SHARED.frames.load(Relaxed),
+        accepted: fed_video + fed_audio,
+        audio_queue_bytes: qa,
+        video_queue_bytes: qv,
+    };
+    match eng.native_stall.step(&probe) {
+        Step::Quiet => false,
+        Step::Armed => {
+            super::log(&format!(
+                "native audio: watching Opus with {channels} channels (audio queue {qa} B, video queue {qv} B); \
+                 fires if nothing is accepted for {NATIVE_AUDIO_STALL_MS} ms with no picture"
+            ));
+            false
+        }
+        Step::Fire { armed_ms, stalled_ms, accepted } => {
+            super::log(&format!(
+                "native audio: STALL, no picture: {accepted} AUs accepted, none for {stalled_ms} ms \
+                 (watching for {armed_ms} ms), audio queue {qa} B, video queue {qv} B"
+            ));
+            true
+        }
+    }
+}
+
 /// Reload onto the conversion [`recover_refused_audio`] installed. A reload that cannot start
 /// spends the rung and raises the read-out (`settle_reload`).
 fn reload_refused_audio(
@@ -920,6 +960,21 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
         crate::route::fail_current_engine();
         eng.release_after_error = true;
         set_state(PlaybackState::Error);
+        return;
+    }
+    if !eng.preview_abandon && native_audio_stall_fired(ps, eng, now) {
+        // A trailer preview is direct-play only: its stall ends the preview, never the player.
+        if crate::route::preview_request(ps) {
+            finish_preview_open_failure(ps, pa);
+            return;
+        }
+        if let Some(offset_ns) = recover_refused_audio(ps, crate::route::audio_recovery::OpenFailure::Stalled) {
+            reload_refused_audio(ps, pa, offset_ns);
+            return;
+        }
+        // Nothing to convert to: end like any refusal the ladder has no rung for (the arm above,
+        // next frame), never a spinner for good.
+        SHARED.load_failed.store(true, Release);
         return;
     }
     // wait for the media-thread ctor
@@ -2101,6 +2156,30 @@ mod native_seek_pump_tests {
 
     fn reloads() -> Vec<i64> {
         super::super::engine::RELOAD_AT_LOG.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// A decoder that swallows a native surround Opus feed gives no picture and no error, so the
+    /// viewer sat on "Buffering" for good. With no way to convert (this rig plans no route) the
+    /// stall must still end on the read-out.
+    #[test]
+    fn a_swallowed_surround_opus_feed_ends_on_the_read_out_not_the_spinner() {
+        let _serial = nj_base::testlock::serial();
+        let mut rig = Rig::new(None);
+        crate::route::feed_native_audio_for_test(&mut rig.ps, "opus", 6);
+        let epoch = rig.eng().native_epoch;
+        assert!(SHARED.mark_native_load_returned(epoch).is_some(), "premise: the Load returned");
+        let eng = rig.eng();
+        eng.stage = Stage::Loading;
+        for (queue, es) in [(eng.aq_video.as_mut(), 1), (eng.aq_audio.as_mut(), 2)] {
+            let q = &mut **queue.expect("the Engine's queues") as *mut crate::aq::AuQueue;
+            assert_eq!(crate::aq::aq_push(q, [0u8; 64].as_ptr(), 64, 0, 1, es), 0);
+        }
+        rig.frame();
+        assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error, "the watchdog only armed");
+        rig.now += super::super::native_stall::NATIVE_AUDIO_STALL_MS + 100;
+        rig.frame();
+        rig.frame();
+        assert_eq!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
     }
 
     #[test]

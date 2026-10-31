@@ -216,6 +216,8 @@ pub(crate) struct Engine {
     // pre-start and on the local-sample source.)
     pub aq_video: Option<Box<AuQueue>>, // g_aq (M owns; ptr handed to D)
     pub aq_audio: Option<Box<AuQueue>>, // audio lane
+    /// The pre-picture watchdog for a swallowed native surround Opus feed.
+    pub native_stall: super::native_stall::Watch,
     // hs/payload are RAII: held alive for the workers (which hold raw ptrs into
     // them) and freed only after join — never read back through the field.
     #[allow(dead_code)]
@@ -1874,6 +1876,7 @@ fn start_bufferfeed_inner(
         prime_play: false,
         aq_video: aqv_box,
         aq_audio: aqa_box,
+        native_stall: super::native_stall::Watch::new(),
         hs,
         pending_video: None,
         pending_audio: None,
@@ -4143,6 +4146,7 @@ mod prime_livelock_tests {
             prime_play: true,
             aq_video: Some(crate::aq::aq_new(AQ_VIDEO_BYTES)),
             aq_audio: Some(crate::aq::aq_new(AQ_AUDIO_BYTES)),
+            native_stall: crate::player::native_stall::Watch::new(),
             hs: nj_net::stream::http_stream_boxed(),
             pending_video: None,
             pending_audio: None,

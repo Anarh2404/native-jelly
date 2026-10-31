@@ -60,8 +60,10 @@ not claim support for every valid RFC 7845 stream.
    persistence and track changes.
 2. Enable stereo Opus in Auto/Force and the profiles together, then verify actual sound, seeks
    and track changes on the TV through the TV-lock workflow, on both outputs.
-3. No stall detector exists: the measured surround stalls are reachable only through debug
-   fixtures (ordinary policy is stereo), so a stalled Load is not yet recovered or learned.
+3. `player::native_stall` watches a natively fed Opus track of more than two channels: both AU
+   queues holding data, nothing accepted for 4 s and no picture is `OpenFailure::Stalled`, named
+   evidence recorded and converted once like `num=200`. The measured stalls are reachable only
+   through debug fixtures (ordinary policy is stereo), and the watchdog is host-tested only.
 
 See [the foundation evidence](verification/2026-10-30-opus-feed-foundation.md).
 See [separate-output TV results](verification/2026-10-30-opus-tv.md) for current scope.

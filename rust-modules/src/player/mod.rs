@@ -27,6 +27,7 @@ pub(crate) mod ass_source; // bounded embedded scripts and subtitle presentation
 pub(crate) mod engine;
 pub(crate) mod lifecycle;
 pub(crate) mod machine;
+pub(crate) mod native_stall; // the pre-picture watchdog for a swallowed native surround Opus feed
 pub(crate) mod playurl; // the `nativejelly-playurl` dev trigger: a stream and its Load declaration, parsed beside the engine that acts on it
 pub(crate) mod preview;
 pub(crate) mod release; // the native object's off-frame release lifecycle (pure machine); `engine` runs it

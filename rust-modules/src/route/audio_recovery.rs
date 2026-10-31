@@ -23,7 +23,8 @@
 //! decodes ([`suspect`]) — converting AAC to AAC rescues nothing.
 //!
 //! **What it teaches** (upstream #1034/#1061, refreshed against `b3d2b66c0`):
-//! * a refusal that NAMES the audio (`type=18 num=200`) is recorded at once, applied from the next
+//! * a refusal that NAMES the audio (`type=18 num=200`, or the feed's silent stall,
+//!   [`OpenFailure::Stalled`]) is recorded at once, applied from the next
 //!   play start ([`Record::Named`]); once per request, whichever rung follows, Force and a pending
 //!   rollback included;
 //! * a refusal that names nothing (any other number, or the synchronous `sf_load == 0`) is an
@@ -47,6 +48,10 @@ pub(crate) enum OpenFailure {
     Refused { num: Option<i32> },
     /// The Load budget ran out with the pipeline silent.
     TimedOut,
+    /// The pipeline took the Load and a few access units of native surround Opus, then stopped
+    /// accepting with both our queues full and no picture (`player::native_stall`). Names the
+    /// audio as a `num=200` does.
+    Stalled,
     /// The demuxer refused an Opus track whose header disagrees with the Load declaration
     /// (`Shared::native_audio_header_refused`): the decoder was never asked.
     HeaderUnsupported,
@@ -167,7 +172,7 @@ impl AudioRecovery {
         }
         let Some(audio) = suspect(facts.audio.as_ref()).cloned() else { return pass(None) };
         let (record, ambiguous) = match facts.failure {
-            OpenFailure::Refused { num: Some(NAMED_AUDIO_REFUSAL) } => {
+            OpenFailure::Refused { num: Some(NAMED_AUDIO_REFUSAL) } | OpenFailure::Stalled => {
                 let first = !std::mem::replace(&mut self.named, true);
                 (first.then(|| Record::Named(audio.clone())), false)
             }
@@ -306,6 +311,20 @@ mod tests {
         m.on_load_started();
         m.on_landed(COPIED_VIDEO);
         assert_eq!(m.on_first_picture(), None, "a Load before the landing is not the landing's");
+    }
+
+    /// The silent stall names the audio as `num=200` does: recorded at once, and converted once.
+    #[test]
+    fn a_silent_stall_is_named_evidence_and_converts_once() {
+        let mut m = AudioRecovery::default();
+        let wide = FedAudio { codec: "opus".into(), channels: 6 };
+        let step = m.on_failure(&failed(OpenFailure::Stalled, opus(6)));
+        assert_eq!(step.record, Some(Record::Named(wide.clone())));
+        assert_eq!(step.action, Action::Convert(wide));
+        m.on_landed(COPIED_VIDEO);
+        m.on_load_started();
+        assert_eq!(m.on_first_picture(), None, "a named refusal needs no proof");
+        assert_eq!(m.on_failure(&failed(OpenFailure::Stalled, opus(6))).action, Action::Pass);
     }
 
     #[test]
