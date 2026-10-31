@@ -2,7 +2,7 @@
 //! without a word.
 //!
 //! A pipeline that cannot take a native Opus track usually says so (`type=18 num=200`, which
-//! `route::audio_recovery` turns into a learned refusal). Some wider layouts do not: the Load is
+//! `route::open_recovery` turns into a learned refusal). Some wider layouts do not: the Load is
 //! accepted, a handful of access units are taken, and then neither a picture nor an error ever
 //! comes (`docs/verification/2026-10-30-opus-tv.md`). [`Watch`] tells that stall from a slow server
 //! by what OUR side holds: both AU queues have data (the demuxer is not the bottleneck) while the

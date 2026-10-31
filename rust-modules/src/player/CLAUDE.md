@@ -33,7 +33,7 @@ packets) and firmware/rank restrictions are staged. Ordinary policy is mono/ster
 family-1 layouts require an exact typed debug-fixture override. Auto/Force routing and
 Jellyfin profiles still withhold Opus. The groundwork is in: one capability snapshot per play
 attempt (`route::attempt_caps`, shared with the DeviceProfile), build-scoped refusal records, and
-one bounded audio-conversion recovery per request (`route::audio_recovery`, driven by
+one bounded audio-conversion recovery per request (`route::open_recovery`, driven by
 `pump::recover_refused_audio`), which also holds the one video rung: a manual pick's video refused
 before its first picture is encoded once under a 1080p ceiling. Enabling waits on real-server and
 TV acceptance. See

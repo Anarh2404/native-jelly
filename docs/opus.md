@@ -41,7 +41,7 @@ not claim support for every valid RFC 7845 stream.
   rows in force on this build, once. Local gates, track switches, rebuilds, the ABR worker, the
   Load guards and the Jellyfin DeviceProfile of that attempt all read this one value; the boot
   snapshot never changes.
-- **Recovery** (`route::audio_recovery`, `pump::recover_refused_audio`): a pre-picture failure
+- **Recovery** (`route::open_recovery`, `pump::recover_refused_audio`): a pre-picture failure
   of natively fed audio outside AAC/AC-3/E-AC-3 converts that audio once per request. It runs
   after a pending HLS→Original rollback and before the Auto HLS contingency. It keeps the carried
   track, subtitle, ceiling and the position the viewer intends (resume or pending seek); the

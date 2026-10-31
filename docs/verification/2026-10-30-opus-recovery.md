@@ -12,7 +12,7 @@ after every gate below; this record is a documentation-only successor.
 | `71fa2f6f` | Bounded install preference `native_audio_refused`; named rows apply at once, counted rows after two proofs |
 | `f43a47db` | One capability snapshot per play attempt, shared by local gates and the Jellyfin DeviceProfile |
 | `7655b93b` | First pre-picture `type=18` number latched; Opus header refusal published separately |
-| `8c8310be` | `route::audio_recovery`: one bounded audio-conversion rung per request, driven by the pump |
+| `8c8310be` | `route::open_recovery`: one bounded audio-conversion rung per request, driven by the pump |
 | `4e528803` | Regression pinning the failed open's intended position (resume or pending seek) |
 
 Opus remains withheld from Auto/Force routing and Jellyfin profiles. No TV run, real-server
@@ -40,10 +40,10 @@ before the opener runs. It fails identically at `a963da40`, is unrelated to C3, 
 
 ## New coverage
 
-- `route::audio_recovery::tests` (9): named vs ambiguous evidence, proof only from a clean
+- `route::open_recovery::tests` (9): named vs ambiguous evidence, proof only from a clean
   audio-only landing with exactly its own Load, one conversion per request, no learning from
   timeouts, failed conversions or headers, Force and pending-rollback behaviour, baseline codecs.
-- `route::decision::audio_recovery_tests` (4, Jellyfin loopback): carried track, start position
+- `route::decision::open_recovery_tests` (4, Jellyfin loopback): carried track, start position
   and copyable video in the PlaybackInfo ask; attempt narrowed while boot caps stay unchanged;
   Dolby Vision no-copy contract preserved and unproven; refused conversion spends the rung and a
   new plan starts fresh; a forced route never asks the server.

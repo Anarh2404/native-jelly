@@ -401,10 +401,10 @@ pub(crate) struct PlaybackSession {
     /// conversion rebuild, the Load's guards, the ABR worker's negotiation — reads it through
     /// [`attempt_caps`], so a refusal stored mid-play changes the next request and never this one.
     attempt_caps: Option<std::sync::Arc<nj_platform::devcaps::Caps>>,
-    /// **This request's one audio-conversion recovery** (`super::audio_recovery`, C3). A fresh
+    /// **This request's one audio-conversion recovery** (`super::open_recovery`, C3). A fresh
     /// value comes with every plan ([`apply_plan`]), so its rung, its counted Loads and a pending
     /// proof are the request's own and never reach the next one.
-    audio_recovery: super::audio_recovery::AudioRecovery,
+    open_recovery: super::open_recovery::OpenRecovery,
 }
 
 /// What the server actually did with a requested Plex Pass audio enhancement (issue #266) — as
@@ -489,7 +489,7 @@ impl PlaybackSession {
         preview: false,
         resolved_as_preview: false,
         attempt_caps: None,
-        audio_recovery: super::audio_recovery::AudioRecovery::NEW,
+        open_recovery: super::open_recovery::OpenRecovery::NEW,
     };
 }
 
@@ -568,7 +568,7 @@ impl PlaybackSession {
             preview: _,
             resolved_as_preview,
             attempt_caps,
-            audio_recovery,
+            open_recovery,
         } = self;
         PlaybackSession {
             direct_play_mode: *direct_play_mode,
@@ -629,7 +629,7 @@ impl PlaybackSession {
             preview: false,
             resolved_as_preview: *resolved_as_preview,
             attempt_caps: attempt_caps.clone(),
-            audio_recovery: audio_recovery.clone(),
+            open_recovery: open_recovery.clone(),
         }
     }
 }
@@ -7055,7 +7055,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::Meta
             preview,
             resolved_as_preview: preview,
             attempt_caps: plan.caps,
-            audio_recovery: super::audio_recovery::AudioRecovery::NEW,
+            open_recovery: super::open_recovery::OpenRecovery::NEW,
         };
     } };
     if let (crate::catalog::TranscodeDelivery::FixedHls { .. }, Some(rung)) = (
@@ -7371,7 +7371,7 @@ struct AppliedRetranscode {
     superseded: String,
     /// Whether the server stated each lane copied (`/decision`'s own verdicts): the C3 audio
     /// recovery's proof that a conversion changed the audio alone.
-    lanes: super::audio_recovery::Lanes,
+    lanes: super::open_recovery::Lanes,
 }
 
 /// What one `/decision` attempt produced.
@@ -7425,7 +7425,7 @@ fn try_retranscode(
     };
     let (dovi, dv_decision) = super::plan::copied_video_dv(&negotiated.video, inputs.src_dovi, inputs.src_dv_decision);
     let fps = super::plan::copied_video_fps(&negotiated.video, inputs.src_fps);
-    let lanes = super::audio_recovery::Lanes {
+    let lanes = super::open_recovery::Lanes {
         video_copied: negotiated.video.copied,
         audio_copied: negotiated.audio.copied,
     };
@@ -7592,14 +7592,14 @@ fn retranscode_as(
     }
 }
 
-// ---- C3: the request's audio-conversion recovery (`super::audio_recovery`) -------------------
+// ---- C3: the request's audio-conversion recovery (`super::open_recovery`) -------------------
 
 /// The audio the live route feeds the pipeline: the Load's declared codec and the carried
 /// track's width. A conversion's output codec (AAC) is never under suspicion
-/// (`audio_recovery::suspect`), so a transcode route answers harmlessly too.
-pub(crate) fn fed_audio(ps: &PlaybackSession) -> Option<super::audio_recovery::FedAudio> {
+/// (`open_recovery::suspect`), so a transcode route answers harmlessly too.
+pub(crate) fn fed_audio(ps: &PlaybackSession) -> Option<super::open_recovery::FedAudio> {
     (!ps.stream_acodec.is_empty())
-        .then(|| super::audio_recovery::FedAudio::new(&ps.stream_acodec, stream_achannels(ps)))
+        .then(|| super::open_recovery::FedAudio::new(&ps.stream_acodec, stream_achannels(ps)))
 }
 
 /// A route feeding this audio natively, for the pump's tests.
@@ -7612,26 +7612,26 @@ pub(crate) fn feed_native_audio_for_test(ps: &mut PlaybackSession, codec: &str, 
 }
 
 /// Hand a pre-picture failure to this request's recovery.
-pub(crate) fn audio_recovery_failure(
+pub(crate) fn open_recovery_failure(
     ps: &mut PlaybackSession,
-    facts: &super::audio_recovery::OpenFacts,
-) -> super::audio_recovery::Step {
-    ps.audio_recovery.on_failure(facts)
+    facts: &super::open_recovery::OpenFacts,
+) -> super::open_recovery::Step {
+    ps.open_recovery.on_failure(facts)
 }
 
 /// A Load started on this request's route (`player::engine::start_bufferfeed_inner`).
-pub(crate) fn note_audio_recovery_load(ps: &mut PlaybackSession) {
-    ps.audio_recovery.on_load_started();
+pub(crate) fn note_open_recovery_load(ps: &mut PlaybackSession) {
+    ps.open_recovery.on_load_started();
 }
 
 /// The current Engine presented its first picture; a proof the conversion earned, if any.
-pub(crate) fn audio_recovery_first_picture(ps: &mut PlaybackSession) -> Option<super::audio_recovery::Record> {
-    ps.audio_recovery.on_first_picture()
+pub(crate) fn open_recovery_first_picture(ps: &mut PlaybackSession) -> Option<super::open_recovery::Record> {
+    ps.open_recovery.on_first_picture()
 }
 
 /// The conversion could not start its reload: the rung is spent.
-pub(crate) fn audio_recovery_reload_failed(ps: &mut PlaybackSession) {
-    ps.audio_recovery.on_conversion_failed();
+pub(crate) fn open_recovery_reload_failed(ps: &mut PlaybackSession) {
+    ps.open_recovery.on_conversion_failed();
 }
 
 /// **The recovery's rung: rebuild this request's route with `audio` converted.** The attempt's
@@ -7646,7 +7646,7 @@ pub(crate) fn audio_recovery_reload_failed(ps: &mut PlaybackSession) {
 /// contingency beside it: the viewer is looking at the spinner of a play that never started.
 pub(crate) fn convert_refused_audio(
     ps: &mut PlaybackSession,
-    audio: &super::audio_recovery::FedAudio,
+    audio: &super::open_recovery::FedAudio,
     offset_secs: i64,
 ) -> Option<String> {
     let narrowed = attempt_caps(ps).without_audio(&audio.codec, audio.channels);
@@ -7677,12 +7677,12 @@ pub(crate) fn convert_refused_audio(
             ));
             install_retranscode_outcome(ps, &applied);
             stop_encoder_session(applied.client, applied.superseded);
-            ps.audio_recovery.on_landed(applied.lanes);
+            ps.open_recovery.on_landed(applied.lanes);
             Some(applied.url)
         }
         RetranscodeWorkerOutcome::Refused => {
             crate::player::log(&format!("audio recovery: the conversion of {} was refused", audio.codec));
-            ps.audio_recovery.on_conversion_failed();
+            ps.open_recovery.on_conversion_failed();
             None
         }
     }
@@ -7707,7 +7707,7 @@ pub(crate) fn video_fed_natively(ps: &PlaybackSession) -> bool {
     !is_transcoding(ps) || ps.cur_contract.remux
 }
 
-/// The video rung (`audio_recovery`): rebuild the route as an encode under the 1080p ceiling, at
+/// The video rung (`open_recovery`): rebuild the route as an encode under the 1080p ceiling, at
 /// the request's position. The attempt's capabilities stay as they are, so audio an earlier rung
 /// took out stays converted. `None` spends the rung and leaves the failure to the ladder.
 pub(crate) fn encode_refused_video(ps: &mut PlaybackSession, offset_secs: i64) -> Option<String> {
@@ -7738,7 +7738,7 @@ pub(crate) fn encode_refused_video(ps: &mut PlaybackSession, offset_secs: i64) -
         }
         RetranscodeWorkerOutcome::Refused => {
             crate::player::log("video recovery: the encode was refused");
-            ps.audio_recovery.on_conversion_failed();
+            ps.open_recovery.on_conversion_failed();
             None
         }
     }
@@ -9040,8 +9040,8 @@ mod carried_audio_tests;
 mod attempt_caps_tests;
 
 #[cfg(test)]
-#[path = "decision_audio_recovery_tests.rs"]
-mod audio_recovery_tests;
+#[path = "decision_open_recovery_tests.rs"]
+mod open_recovery_tests;
 
 
 /// Cached after durable storage; no session IO occurs on the input/frame path.

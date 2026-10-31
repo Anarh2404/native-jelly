@@ -8,10 +8,10 @@
 //! change. `ci/check-deps.sh`'s `wall` gate holds `plan.rs` to zero
 //! `Instant::now`/`SystemTime::now`/`.elapsed()`; `decision.rs` is not scanned by that gate (a
 //! network/adapter effect is allowed to read wall time) but as of this split carries none either.
-//! [`audio_recovery`] is the C3 audio-conversion recovery's pure state machine: the session owns
+//! [`open_recovery`] is the C3 audio-conversion recovery's pure state machine: the session owns
 //! one per request and the pump drives it.
 
-pub(crate) mod audio_recovery;
+pub(crate) mod open_recovery;
 mod decision;
 mod plan;
 

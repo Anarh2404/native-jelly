@@ -1,7 +1,7 @@
 //! C3: the request's audio-conversion recovery, through the real route rebuild against the
 //! Jellyfin loopback — what the server is asked, what the session installs, what is learned.
 use super::*;
-use crate::route::audio_recovery::{Action, FedAudio, OpenFacts, OpenFailure, Record};
+use crate::route::open_recovery::{Action, FedAudio, OpenFacts, OpenFailure, Record};
 use super::test_support::*;
 
 const H264_TWO_OPUS: &str = r#"{"Type":"Video","Codec":"h264","Index":0},{"Type":"Audio","Codec":"opus","Index":1,"Channels":2,"IsDefault":true},{"Type":"Audio","Codec":"opus","Index":2,"Channels":2,"Language":"eng"}"#;
@@ -40,7 +40,7 @@ fn refused_direct_play(ps: &mut PlaybackSession, lb: &JfLoopback, contract: crat
     assert!(!is_transcoding(ps));
     let facts = OpenFacts { failure, audio: fed_audio(ps), seen_picture: false, forced: false, pending_original: false,
         video_native: video_fed_natively(ps), auto_original: false };
-    match audio_recovery_failure(ps, &facts).action {
+    match open_recovery_failure(ps, &facts).action {
         Action::Convert(audio) => audio,
         other => panic!("a refused native Opus open is converted, not {other:?}"),
     }
@@ -74,10 +74,10 @@ fn a_refused_native_opus_is_converted_keeping_track_position_and_copied_video() 
     assert!(!audio_track_direct_plays(&ps, "opus", 2), "nor does a later track switch of this request");
     assert_eq!(*nj_platform::devcaps::caps(), boot, "the boot snapshot is untouched");
 
-    assert_eq!(ps.audio_recovery.converting(), Some(&audio));
-    note_audio_recovery_load(&mut ps);
-    assert_eq!(audio_recovery_first_picture(&mut ps), Some(Record::Proof(audio)), "video copied, audio converted");
-    assert_eq!(audio_recovery_first_picture(&mut ps), None, "one proof per request");
+    assert_eq!(ps.open_recovery.converting(), Some(&audio));
+    note_open_recovery_load(&mut ps);
+    assert_eq!(open_recovery_first_picture(&mut ps), Some(Record::Proof(audio)), "video copied, audio converted");
+    assert_eq!(open_recovery_first_picture(&mut ps), None, "one proof per request");
 
     reset_session(&mut ps);
     install_active_encoder("");
@@ -98,8 +98,8 @@ fn a_route_that_forbids_a_video_copy_converts_both_and_proves_nothing() {
     assert!(convert_refused_audio(&mut ps, &audio, 0).is_some());
     let body = playback_info_body(&lb.finish());
     assert_eq!(body["AllowVideoStreamCopy"], false, "the contract's no-copy rule survives the rescue");
-    note_audio_recovery_load(&mut ps);
-    assert_eq!(audio_recovery_first_picture(&mut ps), None);
+    note_open_recovery_load(&mut ps);
+    assert_eq!(open_recovery_first_picture(&mut ps), None);
 
     reset_session(&mut ps);
     install_active_encoder("");
@@ -118,12 +118,12 @@ fn a_refused_conversion_spends_the_rung_and_the_next_request_starts_fresh() {
     let _ = lb.finish();
     assert!(!is_transcoding(&ps), "the route is not replaced");
     assert_eq!(stream_acodec(&ps), "opus");
-    assert!(ps.audio_recovery.spent());
+    assert!(ps.open_recovery.spent());
     let again = OpenFacts { failure: OpenFailure::Refused { num: Some(200) }, audio: fed_audio(&ps), seen_picture: false, forced: false, pending_original: false, video_native: false, auto_original: false };
-    assert_eq!(audio_recovery_failure(&mut ps, &again).action, Action::Pass, "no second conversion");
+    assert_eq!(open_recovery_failure(&mut ps, &again).action, Action::Pass, "no second conversion");
 
     test_support::apply_plan(&mut ps, Plan { sid, url: "http://127.0.0.1/next".into(), ..Default::default() }, &jf_rk());
-    assert_eq!(ps.audio_recovery, crate::route::audio_recovery::AudioRecovery::NEW, "a plan brings its own recovery");
+    assert_eq!(ps.open_recovery, crate::route::open_recovery::OpenRecovery::NEW, "a plan brings its own recovery");
     reset_session(&mut ps);
 }
 
@@ -158,8 +158,8 @@ fn a_direct_play_error_in_the_answer_still_copies_the_video() {
     assert!(convert_refused_audio(&mut ps, &audio, 0).is_some());
     let _ = lb.finish();
     assert_eq!(stream_vcodec(&ps), "hevc", "the server copied the HEVC; the Load must say so");
-    note_audio_recovery_load(&mut ps);
-    assert_eq!(audio_recovery_first_picture(&mut ps), Some(Record::Proof(audio)));
+    note_open_recovery_load(&mut ps);
+    assert_eq!(open_recovery_first_picture(&mut ps), Some(Record::Proof(audio)));
     reset_session(&mut ps);
     install_active_encoder("");
 }

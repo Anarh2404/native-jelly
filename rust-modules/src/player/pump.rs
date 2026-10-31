@@ -585,7 +585,7 @@ fn recover_failed_source_route(ps: &mut crate::route::PlaybackSession) -> Option
     }
 }
 
-/// **C3: offer a pre-picture failure to this request's audio recovery** (`route::audio_recovery`),
+/// **C3: offer a pre-picture failure to this request's audio recovery** (`route::open_recovery`),
 /// the rung between a pending HLS->Original rollback and [`recover_failed_source_route`]'s Auto
 /// HLS contingency (the machine passes while a rollback is pending, under Force and after a
 /// picture). Records what the failure taught, then — when the machine asks — rebuilds the route
@@ -596,9 +596,9 @@ fn recover_failed_source_route(ps: &mut crate::route::PlaybackSession) -> Option
 /// to the ladder.
 fn recover_refused_audio(
     ps: &mut crate::route::PlaybackSession,
-    failure: crate::route::audio_recovery::OpenFailure,
+    failure: crate::route::open_recovery::OpenFailure,
 ) -> Option<i64> {
-    use crate::route::audio_recovery::{Action, OpenFacts};
+    use crate::route::open_recovery::{Action, OpenFacts};
     let facts = OpenFacts {
         failure,
         audio: crate::route::fed_audio(ps),
@@ -608,7 +608,7 @@ fn recover_refused_audio(
         video_native: crate::route::video_fed_natively(ps),
         auto_original: crate::route::auto_original_watch(ps).is_some(),
     };
-    let step = crate::route::audio_recovery_failure(ps, &facts);
+    let step = crate::route::open_recovery_failure(ps, &facts);
     if let Some(record) = &step.record {
         record_audio_refusal(record);
     }
@@ -679,13 +679,13 @@ fn reload_refused_audio(
         "conversion after a native refusal",
     );
     if !started {
-        crate::route::audio_recovery_reload_failed(ps);
+        crate::route::open_recovery_reload_failed(ps);
     }
 }
 
 /// The learner's write for a recovery record: fire-and-forget on the storage worker.
-fn record_audio_refusal(record: &crate::route::audio_recovery::Record) {
-    use crate::route::audio_recovery::Record;
+fn record_audio_refusal(record: &crate::route::open_recovery::Record) {
+    use crate::route::open_recovery::Record;
     let _ = match record {
         Record::Named(a) => crate::catalog::session::record_named_refusal(&a.codec, a.channels),
         Record::Proof(a) => crate::catalog::session::record_refusal_proof(&a.codec, a.channels),
@@ -949,9 +949,9 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
             return;
         }
         let failure = if SHARED.load_timed_out.load(Acquire) {
-            crate::route::audio_recovery::OpenFailure::TimedOut
+            crate::route::open_recovery::OpenFailure::TimedOut
         } else {
-            crate::route::audio_recovery::OpenFailure::Refused { num: SHARED.load_refusal() }
+            crate::route::open_recovery::OpenFailure::Refused { num: SHARED.load_refusal() }
         };
         if let Some(offset_ns) = recover_refused_audio(ps, failure) {
             reload_refused_audio(ps, pa, offset_ns);
@@ -976,7 +976,7 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
             finish_preview_open_failure(ps, pa);
             return;
         }
-        if let Some(offset_ns) = recover_refused_audio(ps, crate::route::audio_recovery::OpenFailure::Stalled) {
+        if let Some(offset_ns) = recover_refused_audio(ps, crate::route::open_recovery::OpenFailure::Stalled) {
             reload_refused_audio(ps, pa, offset_ns);
             return;
         }
@@ -1014,7 +1014,7 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
         crate::route::confirm_resume_presented(ps);
     }
     if SHARED.seen_frame.load(Relaxed) {
-        if let Some(proof) = crate::route::audio_recovery_first_picture(ps) {
+        if let Some(proof) = crate::route::open_recovery_first_picture(ps) {
             record_audio_refusal(&proof);
         }
     }
@@ -1055,7 +1055,7 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
             return;
         }
         if let Some(offset_ns) = SHARED.native_audio_header_refused.load(Acquire)
-            .then(|| recover_refused_audio(ps, crate::route::audio_recovery::OpenFailure::HeaderUnsupported))
+            .then(|| recover_refused_audio(ps, crate::route::open_recovery::OpenFailure::HeaderUnsupported))
             .flatten()
         {
             reload_refused_audio(ps, pa, offset_ns);

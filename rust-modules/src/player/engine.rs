@@ -1805,7 +1805,7 @@ fn start_bufferfeed_inner(
 
     // Every Load of this request counts for the C3 audio recovery: the conversion's proof is its
     // own reload's first picture, with no other Load in between.
-    crate::route::note_audio_recovery_load(ps);
+    crate::route::note_open_recovery_load(ps);
     // the media thread constructs + loads + runs the loop (owns the GMainContext)
     let payload_ptr = threads::SendPtr(payload_c.as_ptr() as *mut c_char);
     let native_epoch = native_start.epoch();

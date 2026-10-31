@@ -1,13 +1,13 @@
-//! C3: the ONE bounded audio-conversion recovery a play request may make before its first
-//! picture, and the only place native audio refusals are learned from.
+//! The bounded recovery a play request may make before its first picture: one audio conversion,
+//! one video encode, and the only place native audio refusals are learned from.
 //!
-//! [`AudioRecovery`] is a pure `state + event -> step` value: it reads no global and performs no
+//! [`OpenRecovery`] is a pure `state + event -> step` value: it reads no global and performs no
 //! IO. The pump (`player::pump::recover_refused_audio`, the driver) reads the facts of a failed
 //! open into [`OpenFacts`], executes the [`Step`] it gets back (the learner's write through
 //! `catalog::session`, the conversion through [`super::convert_refused_audio`]) and reports what
 //! happened next as the following events.
 //!
-//! **The owner is the request.** One value lives in `PlaybackSession::audio_recovery`, and
+//! **The owner is the request.** One value lives in `PlaybackSession::open_recovery`, and
 //! `apply_plan` installs a fresh one with every plan, so a recovery, a counted Load or a pending
 //! proof can never cross into the next request. The capability narrowing a conversion needs is
 //! the attempt's own (`PlaybackSession::attempt_caps`), never the boot snapshot: a refusal this
@@ -174,15 +174,15 @@ enum State {
 
 /// One play request's audio recovery. See the module doc.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct AudioRecovery {
+pub(crate) struct OpenRecovery {
     state: State,
     /// A named refusal was already handed to the driver for this request.
     named: bool,
 }
 
-impl AudioRecovery {
+impl OpenRecovery {
     /// A request's value before anything happened (`PlaybackSession::IDLE` is a `const`).
-    pub(crate) const NEW: AudioRecovery = AudioRecovery { state: State::Idle, named: false };
+    pub(crate) const NEW: OpenRecovery = OpenRecovery { state: State::Idle, named: false };
 
     /// The open failed before a picture.
     pub(crate) fn on_failure(&mut self, facts: &OpenFacts) -> Step {
@@ -311,7 +311,7 @@ mod tests {
     const COPIED_VIDEO: Lanes = Lanes { video_copied: true, audio_copied: false };
 
     /// The happy path of a counted proof, from the failure to the picture.
-    fn rescue(m: &mut AudioRecovery, failure: OpenFailure, lanes: Lanes, loads: u32) -> (Step, Option<Record>) {
+    fn rescue(m: &mut OpenRecovery, failure: OpenFailure, lanes: Lanes, loads: u32) -> (Step, Option<Record>) {
         let step = m.on_failure(&failed(failure, opus(2)));
         m.on_landed(lanes);
         for _ in 0..loads {
@@ -322,7 +322,7 @@ mod tests {
 
     #[test]
     fn a_named_refusal_is_recorded_at_once_and_converted() {
-        let mut m = AudioRecovery::default();
+        let mut m = OpenRecovery::default();
         let (step, proof) = rescue(&mut m, NAMED, COPIED_VIDEO, 1);
         assert_eq!(step.record, Some(Record::Named(FedAudio { codec: "opus".into(), channels: 2 })));
         assert_eq!(step.action, Action::Convert(FedAudio { codec: "opus".into(), channels: 2 }));
@@ -332,27 +332,27 @@ mod tests {
 
     #[test]
     fn an_ambiguous_refusal_teaches_only_through_a_clean_rescue() {
-        let mut m = AudioRecovery::default();
+        let mut m = OpenRecovery::default();
         let (step, proof) = rescue(&mut m, SHUT, COPIED_VIDEO, 1);
         assert_eq!(step.record, None, "601 names nothing");
         assert!(matches!(step.action, Action::Convert(_)));
         assert_eq!(proof, Some(Record::Proof(FedAudio { codec: "opus".into(), channels: 2 })));
 
         let sync = OpenFailure::Refused { num: None };
-        let (_, proof) = rescue(&mut AudioRecovery::default(), sync, COPIED_VIDEO, 1);
+        let (_, proof) = rescue(&mut OpenRecovery::default(), sync, COPIED_VIDEO, 1);
         assert!(proof.is_some(), "the synchronous sf_load refusal is ambiguous too");
     }
 
     #[test]
     fn a_rescue_that_changed_more_than_the_audio_or_crossed_a_load_proves_nothing() {
         let encoded = Lanes { video_copied: false, audio_copied: false };
-        assert_eq!(rescue(&mut AudioRecovery::default(), SHUT, encoded, 1).1, None, "video re-encoded");
+        assert_eq!(rescue(&mut OpenRecovery::default(), SHUT, encoded, 1).1, None, "video re-encoded");
         let untouched = Lanes { video_copied: true, audio_copied: true };
-        assert_eq!(rescue(&mut AudioRecovery::default(), SHUT, untouched, 1).1, None, "audio not converted");
-        assert_eq!(rescue(&mut AudioRecovery::default(), SHUT, COPIED_VIDEO, 2).1, None, "a second Load");
-        assert_eq!(rescue(&mut AudioRecovery::default(), SHUT, COPIED_VIDEO, 0).1, None, "no reload of the landing");
+        assert_eq!(rescue(&mut OpenRecovery::default(), SHUT, untouched, 1).1, None, "audio not converted");
+        assert_eq!(rescue(&mut OpenRecovery::default(), SHUT, COPIED_VIDEO, 2).1, None, "a second Load");
+        assert_eq!(rescue(&mut OpenRecovery::default(), SHUT, COPIED_VIDEO, 0).1, None, "no reload of the landing");
 
-        let mut m = AudioRecovery::default();
+        let mut m = OpenRecovery::default();
         m.on_failure(&failed(SHUT, opus(2)));
         m.on_load_started();
         m.on_landed(COPIED_VIDEO);
@@ -367,10 +367,10 @@ mod tests {
     #[test]
     fn a_refused_video_gets_one_encode_and_teaches_nothing() {
         let aac = Some(FedAudio::new("aac", 2));
-        let mut m = AudioRecovery::default();
+        let mut m = OpenRecovery::default();
         assert_eq!(m.on_failure(&failed(VIDEO, aac.clone())), ENCODE);
         assert_eq!(m.on_failure(&failed(VIDEO, aac.clone())), PASS, "one per request");
-        let mut m = AudioRecovery::default();
+        let mut m = OpenRecovery::default();
         assert_eq!(m.on_failure(&failed(OpenFailure::Refused { num: None }, None)), ENCODE, "no audio at all");
         m.on_load_started();
         assert_eq!(m.on_first_picture(), None, "a video facet never proves");
@@ -381,7 +381,7 @@ mod tests {
     #[test]
     fn the_video_rung_answers_only_an_explicit_refusal_of_a_natively_fed_video() {
         let aac = || Some(FedAudio::new("aac", 2));
-        let pass = |facts: OpenFacts| AudioRecovery::default().on_failure(&facts);
+        let pass = |facts: OpenFacts| OpenRecovery::default().on_failure(&facts);
         assert_eq!(pass(failed(NAMED, aac())), PASS, "num=200 names the audio, not the video");
         assert_eq!(pass(failed(OpenFailure::TimedOut, aac())), PASS);
         assert_eq!(pass(failed(OpenFailure::Stalled, aac())), PASS);
@@ -397,19 +397,19 @@ mod tests {
     /// video was already encoded has nothing left to try.
     #[test]
     fn a_refused_conversion_with_copied_video_gets_one_both_facets_encode() {
-        let mut m = AudioRecovery::default();
+        let mut m = OpenRecovery::default();
         m.on_failure(&failed(SHUT, opus(2)));
         m.on_landed(COPIED_VIDEO);
         m.on_load_started();
         assert_eq!(m.on_failure(&failed(SHUT, None)), ENCODE);
         assert_eq!(m.on_failure(&failed(SHUT, None)), PASS);
 
-        let mut m = AudioRecovery::default();
+        let mut m = OpenRecovery::default();
         m.on_failure(&failed(SHUT, opus(2)));
         m.on_landed(Lanes { video_copied: false, audio_copied: false });
         assert_eq!(m.on_failure(&failed(SHUT, None)), PASS, "the video was already encoded");
 
-        let mut m = AudioRecovery::default();
+        let mut m = OpenRecovery::default();
         m.on_failure(&failed(SHUT, opus(2)));
         m.on_landed(COPIED_VIDEO);
         assert_eq!(m.on_failure(&failed(NAMED, None)), PASS, "a refusal naming the audio is not the video's");
@@ -418,7 +418,7 @@ mod tests {
     /// The silent stall names the audio as `num=200` does: recorded at once, and converted once.
     #[test]
     fn a_silent_stall_is_named_evidence_and_converts_once() {
-        let mut m = AudioRecovery::default();
+        let mut m = OpenRecovery::default();
         let wide = FedAudio { codec: "opus".into(), channels: 6 };
         let step = m.on_failure(&failed(OpenFailure::Stalled, opus(6)));
         assert_eq!(step.record, Some(Record::Named(wide.clone())));
@@ -431,7 +431,7 @@ mod tests {
 
     #[test]
     fn one_conversion_per_request_and_a_failed_rescue_teaches_nothing() {
-        let mut m = AudioRecovery::default();
+        let mut m = OpenRecovery::default();
         m.on_failure(&failed(SHUT, opus(2)));
         m.on_landed(COPIED_VIDEO);
         m.on_load_started();
@@ -440,7 +440,7 @@ mod tests {
         assert_eq!(m.on_first_picture(), None, "and its pending proof is gone");
         assert_eq!(m.on_failure(&failed(NAMED, opus(2))).action, Action::Pass);
 
-        let mut m = AudioRecovery::default();
+        let mut m = OpenRecovery::default();
         m.on_failure(&failed(SHUT, opus(2)));
         m.on_conversion_failed();
         assert_eq!(m.on_failure(&failed(SHUT, opus(2))).action, Action::Pass, "no retry loop");
@@ -449,7 +449,7 @@ mod tests {
 
     #[test]
     fn a_named_refusal_is_handed_over_once_per_request() {
-        let mut m = AudioRecovery::default();
+        let mut m = OpenRecovery::default();
         let forced = OpenFacts { forced: true, ..failed(NAMED, opus(2)) };
         assert!(m.on_failure(&forced).record.is_some());
         assert_eq!(m.on_failure(&forced).record, None, "a repeated Load does not write again");
@@ -461,7 +461,7 @@ mod tests {
             OpenFacts { forced: true, ..failed(NAMED, opus(2)) },
             OpenFacts { pending_original: true, ..failed(NAMED, opus(2)) },
         ] {
-            let step = AudioRecovery::default().on_failure(&facts);
+            let step = OpenRecovery::default().on_failure(&facts);
             assert!(matches!(step.record, Some(Record::Named(_))));
             assert_eq!(step.action, Action::Pass);
         }
@@ -470,13 +470,13 @@ mod tests {
             OpenFacts { pending_original: true, ..failed(SHUT, opus(2)) },
             OpenFacts { forced: true, ..failed(OpenFailure::HeaderUnsupported, opus(2)) },
         ] {
-            assert_eq!(AudioRecovery::default().on_failure(&facts), Step { record: None, action: Action::Pass });
+            assert_eq!(OpenRecovery::default().on_failure(&facts), Step { record: None, action: Action::Pass });
         }
     }
 
     #[test]
     fn an_unsupported_header_is_converted_but_never_learned() {
-        let (step, proof) = rescue(&mut AudioRecovery::default(), OpenFailure::HeaderUnsupported, COPIED_VIDEO, 1);
+        let (step, proof) = rescue(&mut OpenRecovery::default(), OpenFailure::HeaderUnsupported, COPIED_VIDEO, 1);
         assert_eq!(step.record, None);
         assert!(matches!(step.action, Action::Convert(_)));
         assert_eq!(proof, None, "the decoder was never asked");
@@ -491,15 +491,15 @@ mod tests {
             (failed(NAMED, None), "converted audio was fed"),
             (OpenFacts { seen_picture: true, ..failed(NAMED, opus(2)) }, "after a picture"),
         ] {
-            let mut m = AudioRecovery::default();
+            let mut m = OpenRecovery::default();
             assert_eq!(m.on_failure(&facts), Step { record: None, action: Action::Pass }, "{why}");
-            assert_eq!(m, AudioRecovery::default(), "{why}: the rung stays available");
+            assert_eq!(m, OpenRecovery::default(), "{why}: the rung stays available");
         }
     }
 
     #[test]
     fn an_unknown_width_and_dts_spelling_are_carried_as_stated() {
-        let step = AudioRecovery::default().on_failure(&failed(NAMED, Some(FedAudio::new("dca", 0))));
+        let step = OpenRecovery::default().on_failure(&failed(NAMED, Some(FedAudio::new("dca", 0))));
         assert_eq!(step.record, Some(Record::Named(FedAudio { codec: "dts".into(), channels: 0 })));
         assert_eq!(FedAudio::new("opus", -1).channels, 0);
     }
