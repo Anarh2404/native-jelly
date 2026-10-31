@@ -107,6 +107,10 @@ pub(crate) struct DetailScreen {
     // Published identity projections, rebuilt only at mount/landings, never while drawing.
     key_by_local: std::collections::HashMap<u32, u32>,
     local_by_key: std::collections::HashMap<u32, u32>,
+    /// Where each episode that left the strip last stood (engine key to local key), so `reconcile`
+    /// can keep focus at the same place in the strip; dropped if the episode returns. Not logical
+    /// state: a projection of past publications, like the two maps above.
+    gone_episodes: std::collections::HashMap<u32, u32>,
     return_pending: bool,
 
     // Logical decisions. None is a focus cursor.
@@ -386,6 +390,7 @@ impl DetailScreen {
             next_elem: FIRST_ITEM_ELEM,
             key_by_local: Default::default(),
             local_by_key: Default::default(),
+            gone_episodes: Default::default(),
             return_pending: false,
             pending_season: None,
             season_settle: 0.0,
@@ -479,6 +484,15 @@ impl DetailScreen {
         }
     }
 
+    /// The strip's recovery for a focused episode that is no longer listed: the place it held,
+    /// clamped to the new list, on the same row. `None` for any other element and for an empty
+    /// strip, which fall to the page's own fallback.
+    fn episode_recovery(&self, elem: u32, meta: crate::metadata::MetadataView<'_>) -> Option<u32> {
+        let (index, row) = episodes::locate(*self.gone_episodes.get(&elem)?)?;
+        let last = self.detail(meta)?.episodes.len().min(episodes::MAX_ITEMS).checked_sub(1)?;
+        self.engine_key(episodes::elem(index.min(last), row)?)
+    }
+
     fn key_of(&self, located: Located) -> Option<u32> {
         self.engine_key(located.local_key()?)
     }
@@ -525,7 +539,7 @@ impl DetailScreen {
         }
         let mut interned: std::collections::HashMap<DetailIdentity, u32> = self.keys.iter().map(|key| (key.identity.clone(), key.elem)).collect();
         self.key_by_local.clear();
-        self.local_by_key.clear();
+        let previous = std::mem::take(&mut self.local_by_key);
         for (local, identity) in identities {
             let identity = match &identity {
                 DetailIdentity::Season { rk, .. } | DetailIdentity::Episode { rk, .. } | DetailIdentity::Related { rk, .. } | DetailIdentity::Extra { rk, .. }
@@ -542,6 +556,10 @@ impl DetailScreen {
             self.key_by_local.insert(local, elem);
             self.local_by_key.insert(elem, local);
         }
+        self.gone_episodes.retain(|elem, _| !self.local_by_key.contains_key(elem));
+        self.gone_episodes.extend(previous.into_iter().filter(|(elem, local)| {
+            !self.local_by_key.contains_key(elem) && episodes::locate(*local).is_some()
+        }));
         if let Some(key) = pending_key {
             self.pending_season = self.local_by_key.get(&key).and_then(|local| season::locate(*local));
         }
@@ -1542,6 +1560,9 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Focusable<H> for D
             .is_some_and(|located| self.valid(located, meta))
         {
             return want;
+        }
+        if let Some(elem) = self.episode_recovery(want.elem, meta) {
+            return FocusKey { entry: want.entry, elem };
         }
         FocusKey {
             entry: want.entry,

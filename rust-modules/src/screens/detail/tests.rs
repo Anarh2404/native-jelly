@@ -92,7 +92,7 @@ fn bare(_guard: &nj_base::testlock::Serial, sid: ServerId, rk: &str) -> DetailSc
         sid,
         rk: rk.into(),
         keys: vec![], next_elem: FIRST_ITEM_ELEM, key_by_local: Default::default(),
-        local_by_key: Default::default(), return_pending: false,
+        local_by_key: Default::default(), gone_episodes: Default::default(), return_pending: false,
         pending_season: None,
         season_settle: 0.0,
         preview_dwell: 0.0,
@@ -3630,5 +3630,46 @@ fn a_return_whose_re_read_fails_puts_the_page_back_at_the_top() {
     assert!(screen.restore_intent.is_none() && !screen.return_pending, "the return gave up");
     assert_eq!(screen.scroll_target, 0.0, "a page with no detail shows only the hero, so it goes back to it");
     test_store().run(MetadataCmd::Clear);
+    clear();
+}
+
+/// RIGHT on the season strip, then DOWN before the new season lands, seats focus on an episode of
+/// the old season, and the landing takes that episode away. Focus stays at the same place in the
+/// strip: the hero fallback would scroll the whole page back to its top.
+#[test]
+fn a_vanished_episode_falls_to_the_same_place_in_the_strip() {
+    let sid = ServerId::UNSET;
+    let names = ["a", "b", "c", "d", "e"];
+    let season_of = |names: &[&str]| {
+        let mut d = detail(sid, "show");
+        d.episodes = names.iter().enumerate().map(|(i, rk)| episode(rk, i as i64 + 1)).collect();
+        d
+    };
+    let _guard = install(season_of(&names));
+    let mut screen = bare(&_guard, sid, "show");
+    screen.sync_keys(test_store().view());
+    let measure = crate::ui::fixture::FixtureMeasure;
+    let at = |screen: &DetailScreen, i: usize, row| screen.engine_key(episodes::elem(i, row).unwrap()).unwrap();
+    for row in [episodes::Row::Still, episodes::Row::Text] {
+        let want = FocusKey { entry: EntryId(7), elem: at(&screen, 3, row) };
+        let publish = |screen: &mut DetailScreen, d: Detail| {
+            crate::metadata::set_current_for_test(test_store().state_mut(), Some(d));
+            screen.sync_keys(test_store().view());
+        };
+        let recovered = |screen: &DetailScreen| Focusable::<TestHost>::reconcile(screen, want, &cx(&measure, None)).elem;
+        publish(&mut screen, season_of(&["d", "a"]));
+        assert_eq!(recovered(&screen), want.elem, "an episode still listed keeps focus when its index moves");
+        publish(&mut screen, season_of(&names));
+        publish(&mut screen, season_of(&["a", "b", "c"]));
+        assert_eq!(recovered(&screen), at(&screen, 2, row), "past the end: the same row of the last episode");
+        publish(&mut screen, season_of(&names));
+        publish(&mut screen, season_of(&["a", "b", "c", "x", "e"]));
+        assert_eq!(recovered(&screen), at(&screen, 3, row), "the same index, whoever now stands there");
+        publish(&mut screen, season_of(&names));
+        assert_eq!(recovered(&screen), want.elem, "a returning episode is simply focused again");
+        publish(&mut screen, season_of(&[]));
+        assert_eq!(recovered(&screen), hero::HeroCtl::Play.elem(), "an emptied season falls to the hero");
+        publish(&mut screen, season_of(&names));
+    }
     clear();
 }
