@@ -341,7 +341,11 @@ impl<H: SearchLike> Machine<H> for SearchScreen {
                         let (kinds, n) = self.kinds();
                         let end = layout::top(&kinds[..n], n, |i| self.rows[i].motion.band_expand());
                         let max = (end + crate::ui::consts::MARGIN_Y - SCR_H).max(0.0);
-                        self.scroll_target = (self.scroll_target - dy * crate::ui::table::ROW_H).clamp(0.0, max);
+                        // A notch of the remote's wheel (a whole step) moves a table row, as it
+                        // always has; the pointer's edge glide (a fraction every frame, in rows a
+                        // second) moves the poster rows every other page glides by.
+                        let unit = if dy.fract() == 0.0 { crate::ui::table::ROW_H } else { crate::ui::card_row::ROW_PITCH_FIXED };
+                        self.scroll_target = (self.scroll_target - dy * unit).clamp(0.0, max);
                         fx.invalidate(Provenance::Input);
                     }
                 }
@@ -638,6 +642,7 @@ impl<H: SearchLike> Screen<H> for SearchScreen {
     fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<nj_machine::machine::FocusKey<u32>>) {
         SearchScreen::redraw_focused::<H>(self, f, focus)
     }
+    fn glides(&self) -> bool { true }
     fn name(&self) -> &'static str { "search" }
     fn state(&self) -> &dyn LogicalState { self }
     fn crumb(&self, _: &Cx<'_, H>) -> Option<Cow<'_, str>> { None }

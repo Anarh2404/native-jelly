@@ -3079,6 +3079,12 @@ pub(crate) fn text_field_owns_input(d: &Dispatcher<AppHost>) -> bool {
                 .is_some_and(|screen| screen.is::<crate::screens::jf_login::JfLoginScreen>()))
 }
 
+/// **Does the page under the pointer glide at the screen's edges?** No surface is up and the top
+/// page scrolls itself by a wheel (`Screen::glides`): the pointer's edge glide is offered to it.
+pub(crate) fn page_glides(d: &Dispatcher<AppHost>) -> bool {
+    !d.surface_up() && d.owns_input() && d.top_screen().is_some_and(|screen| screen.glides())
+}
+
 pub(crate) fn owns_input(d: &Dispatcher<AppHost>) -> bool {
     d.surface_up() || d.owns_input()
 }

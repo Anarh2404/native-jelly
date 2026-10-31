@@ -102,7 +102,7 @@ fn bare(sid: ServerId, rk: &str) -> DetailScreen {
         refresh_gen: 0,
         scroll: Spring::at(0.0),
         scroll_target: 0.0,
-        episode_scroll: Spring::at(0.0),
+        free: false, episode_scroll: Spring::at(0.0), episode_free: false,
         tab_scroll: Spring::at(0.0),
         episode_scale: [Spring::at(1.0); EP_SCALE_MAX],
         episode_text_lift: [crate::ui::text_lift::TextLift::new(); EP_SCALE_MAX],

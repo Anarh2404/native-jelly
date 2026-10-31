@@ -193,7 +193,17 @@ pub(crate) struct DetailScreen {
     // Render state.
     scroll: Spring,
     scroll_target: f32,
+    /// **The page is where the pointer put it.** Set by a wheel (the pointer's edge glide) and by a
+    /// hover, which moves focus but never the page; cleared by a key's move and by a click. While
+    /// set, a landing does not bring the page back to the focused section: on a series page the
+    /// shelves land AS the glide reaches them, and each landing would snap the page back. Not in
+    /// the canon: what it decides is `scroll_target`, which is.
+    free: bool,
     episode_scroll: Spring,
+    /// The episode strip is where the pointer's sideways glide put it (`InputKind::Pan`): the tick
+    /// stops steering it to the focused episode until a key's move or a click. Like `free`, not in
+    /// the canon.
+    episode_free: bool,
     tab_scroll: Spring,
     episode_scale: [Spring; EP_SCALE_MAX],
     /// Each episode label block's focus lift, earned by the TEXT stop alone (the plate also shows
@@ -413,7 +423,9 @@ impl DetailScreen {
             teardown_cleared: false,
             scroll: Spring::at(0.0),
             scroll_target: 0.0,
+            free: false,
             episode_scroll: Spring::at(0.0),
+            episode_free: false,
             tab_scroll: Spring::at(0.0),
             episode_scale: [Spring::at(1.0); EP_SCALE_MAX],
             episode_text_lift: [TextLift::new(); EP_SCALE_MAX],
@@ -1770,7 +1782,12 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Machine<H> for Det
                     }
                 }
                 self.pump_restore(meta, fx);
-                self.reveal_focus(cx.focus.current, cx.measure, meta);
+                if self.free {
+                    // the page stays where the pointer put it, inside what the landing left
+                    self.scroll_target = self.scroll_target.clamp(0.0, self.max_scroll(meta, cx.measure));
+                } else {
+                    self.reveal_focus(cx.focus.current, cx.measure, meta);
+                }
                 fx.invalidate(Provenance::Landing(fx.from()));
                 Handled::Yes
             }
@@ -1779,7 +1796,14 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Machine<H> for Det
                     self.return_pending = false;
                     self.restore_intent = None;
                 }
-                self.reveal_focus(Some(*to), cx.measure, meta);
+                // A hover moves focus, never the page: the pointer scrolls by the screen's edges
+                // (and a click by what it clicked, the `Input` arm).
+                if *by == By::Pointer {
+                    self.free = true;
+                } else {
+                    self.release_glides();
+                    self.reveal_focus(Some(*to), cx.measure, meta);
+                }
                 if let Some(located) = self.locate(to.elem, meta) {
                     if let Located::Season(i) = located {
                         if matches!(by, By::Dir | By::Pointer) {
@@ -1847,6 +1871,38 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Machine<H> for Det
                             return Handled::Yes;
                         }
                     }
+                }
+                // A click brings the page to what it clicked, the way a key's move does.
+                if let InputKind::Click { hit: Some(hit), .. } = input.kind {
+                    if !self.full_trailer() {
+                        self.release_glides();
+                        self.reveal_focus(Some(FocusKey { entry: self.entry, elem: hit }), cx.measure, meta);
+                        fx.invalidate(Provenance::Input);
+                    }
+                }
+                // The pointer's sideways glide moves the row under it, left where it put it until
+                // a key's move or a click.
+                if let InputKind::Pan { dx, y, .. } = input.kind {
+                    if dx.is_finite() && !self.full_trailer() {
+                        self.pan_row(dx, y, meta, cx.measure);
+                        fx.invalidate(Provenance::Input);
+                    }
+                    return Handled::Yes;
+                }
+                // A wheel (and the pointer's edge glide, a fractional one) moves the page itself,
+                // focus staying where it is, as the Library's does.
+                if let InputKind::Wheel { dy } = input.kind {
+                    if !dy.is_finite() || self.full_trailer() {
+                        return Handled::Yes;
+                    }
+                    self.restore_intent = None;
+                    self.return_pending = false;
+                    self.free = true;
+                    let max = self.max_scroll(meta, cx.measure);
+                    let to = self.scroll_target - dy * card_row::ROW_PITCH_FIXED;
+                    self.scroll_target = if dy > 0.0 { to.max(0.0) } else { to.min(max.max(self.scroll_target)) };
+                    fx.invalidate(Provenance::Input);
+                    return Handled::Yes;
                 }
                 if matches!(input.kind, InputKind::Key { key: Key::Up | Key::Down | Key::Left | Key::Right, edge: Edge::Down, .. }) {
                     self.restore_intent = None;
@@ -2071,6 +2127,7 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Screen<H> for Deta
     fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<nj_machine::machine::FocusKey<u32>>) {
         DetailScreen::redraw_focused::<H>(self, f, focus)
     }
+    fn glides(&self) -> bool { true }
     fn name(&self) -> &'static str {
         "detail"
     }
@@ -3112,6 +3169,52 @@ impl LogicalState for DetailScreen {
 }
 
 impl DetailScreen {
+    /// A key's move or a click takes the page and its rows back from the pointer.
+    fn release_glides(&mut self) {
+        self.free = false;
+        self.episode_free = false;
+        for row in [&mut self.related, &mut self.collection, &mut self.extras, &mut self.cast] {
+            row.unfree();
+        }
+    }
+
+    /// **The pointer's sideways glide over the page** (`InputKind::Pan`): the section drawn at
+    /// screen `y` moves by `dx` px if it is a row (Related, a collection, Extras, Cast or the
+    /// episode strip).
+    fn pan_row(&mut self, dx: f32, y: f32, meta: crate::metadata::MetadataView<'_>, measure: &dyn nj_machine::machine::Measure) {
+        use section::SectionId;
+        let Some(d) = self.detail(meta) else { return };
+        let (sections, n) = self.sections(Some(d));
+        let Some(sec) = sections[..n].iter().copied().find(|&sec| {
+            let top = self.section_top(sec, d, measure) - self.scroll.pos;
+            y >= top && y < top + self.block_h(sec, d, measure)
+        }) else { return };
+        if sec == SectionId::Related.raw() {
+            self.related.glide(dx, d.related.len(), &RowStyle::HOME);
+        } else if sec == SectionId::Collections.raw() {
+            self.collection.glide(dx, collection::len(d), &RowStyle::HOME);
+        } else if sec == SectionId::Extras.raw() {
+            self.extras.glide(dx, extras::len(d), &RowStyle::EPISODE);
+        } else if sec == SectionId::Cast.raw() {
+            self.cast.glide(dx, d.credits_len(), &RowStyle::CAST);
+        } else if sec == SectionId::Episode.raw() {
+            let viewport = crate::ui::consts::SCR_W - 2.0 * crate::ui::consts::MARGIN_X;
+            let span = d.episodes.len() as f32 * (episodes::W + episodes::GAP) - episodes::GAP;
+            self.episode_scroll.jump((self.episode_scroll.pos + dx).clamp(0.0, (span - viewport).max(0.0)));
+            self.episode_free = true;
+        }
+    }
+
+    /// The furthest the page scrolls: the scroll the last section's reveal takes (what a key can
+    /// reach, and the end of a wheel's travel).
+    fn max_scroll(&self, meta: crate::metadata::MetadataView<'_>, measure: &dyn nj_machine::machine::Measure) -> f32 {
+        self.detail(meta).map_or(0.0, |d| {
+            let (sections, n) = self.sections(Some(d));
+            if n == 0 { return 0.0; }
+            (self.section_top_settled(sections[n - 1], d, measure) - crate::ui::detail_layout::TOP_MARGIN).max(0.0)
+        })
+    }
+
     fn reveal_focus(&mut self, focus: Option<FocusKey<u32>>, measure: &dyn nj_machine::machine::Measure, meta: crate::metadata::MetadataView<'_>) {
         if self.return_waiting(meta) { return; }
         let Some(located) = focus.filter(|key| key.entry == self.entry).and_then(|key| self.locate(key.elem, meta)) else { return };
@@ -3288,7 +3391,7 @@ impl DetailScreen {
             if let Some(i) = match focused {
                 Some(Located::Episode(i, _)) => Some(i),
                 _ => None,
-            } {
+            }.filter(|_| !self.episode_free) {
                 let target = card_row::scroll_into_view(
                     self.episode_scroll.pos,
                     i,

@@ -962,3 +962,22 @@ fn a_collection_shelf_counts_results_and_its_tiles_count_items() {
     // Cardinal rules apply to the absolute value, including negative wire counts.
     assert_eq!((item_count(0), item_count(-1)), ("0 items".to_owned(), "-1 item".to_owned()));
 }
+
+/// **The pointer's edge glide moves Search's results by poster rows, the unit every page glides
+/// by**; by the 60 px table row a wheel notch uses they would crawl at a seventh of the speed. A
+/// notch (a whole step) still moves one table row.
+#[test]
+fn the_edge_glide_moves_the_results_by_poster_rows_and_a_wheel_notch_by_a_table_row() {
+    let _serial = nj_base::testlock::serial();
+    let mut fixture = Fixture::new();
+    fixture.query("glide").shelves(vec![shelf(Kind::Movie, "g0", 6), shelf(Kind::Show, "g1", 6), shelf(Kind::Movie, "g2", 6)]);
+    let mut screen = fixture.screen();
+    let engine = seated(&screen, &fixture);
+    let wheel = |dy: f32| ScreenEvent::Input(InputEvent { at: tick(0), source: Source::Script, kind: InputKind::Wheel { dy } });
+    for _ in 0..10 { deliver(&mut screen, &fixture, engine.current(OWNER), wheel(-0.03)); }
+    let glided = screen.scroll_target;
+    assert!((glided - 0.3 * crate::ui::card_row::ROW_PITCH_FIXED).abs() < 0.01, "the glide moves by poster rows: {glided}");
+    deliver(&mut screen, &fixture, engine.current(OWNER), wheel(-1.0));
+    assert!((screen.scroll_target - glided - crate::ui::table::ROW_H).abs() < 0.01,
+        "a wheel notch moves one table row: {} -> {}", glided, screen.scroll_target);
+}

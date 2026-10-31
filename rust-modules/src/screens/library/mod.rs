@@ -548,7 +548,11 @@ impl LibraryScreen {
 
     fn reveal<H: LibraryLike>(&mut self, key: FocusKey<u32>, by: By, cx: &Cx<'_, H>) {
         self.relayout(Some(key));
-        let want = if let Some(index) = self.pair.detail.index_of(key.elem) {
+        // A hover moves focus, never the page: the pointer scrolls by the screen's edges (and a
+        // click by what it clicked, the `Input` arm).
+        let want = if by == By::Pointer {
+            None
+        } else if let Some(index) = self.pair.detail.index_of(key.elem) {
             Some(self.target_layout.row_reveal(index / self.layout.cols()))
         } else if let Some(index) = self.shelves.iter().position(|row|
             row.elems.contains(&key.elem) || row.heading_elem() == Some(key.elem)) {
@@ -906,6 +910,12 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
                 let grid_focus = Some(*to).filter(|key| key.entry == self.entry)
                     .and_then(|key| self.pair.detail.index_of(key.elem));
                 self.pair.detail.focus_row(grid_focus.map(|index| index / self.layout.cols()), matches!(by, By::Dir | By::Pointer));
+                // A key's move along a shelf brings it back to its focus; a hover does not.
+                if *by != By::Pointer {
+                    for shelf in &mut self.shelves {
+                        if shelf.elems.contains(&to.elem) { shelf.motion.unfree(); }
+                    }
+                }
                 if matches!(by, By::Dir | By::Pointer) {
                     self.initial = false;
                     self.provisional = None;
@@ -1080,6 +1090,32 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
                 if matches!(input.kind, InputKind::Key { key: Key::Ok, edge: Edge::Down, .. })
                     && cx.focus.current.is_some_and(|key| key.entry == self.entry && region_of_elem(key.elem) == Some(KeyRegion::Rail)) {
                     self.reseat(FocusTarget::ContainerGroup(self.pair.groups_config().detail), fx);
+                    return Handled::Yes;
+                }
+                // A click brings the page to the card it clicked, the way a key's move does.
+                if let InputKind::Click { hit: Some(hit), .. } = input.kind {
+                    for shelf in &mut self.shelves {
+                        if shelf.elems.contains(&hit) { shelf.motion.unfree(); }
+                    }
+                    if let Some(index) = self.pair.detail.index_of(hit) {
+                        self.scroll_target = self.target_layout.row_reveal(index / self.layout.cols());
+                        fx.invalidate(Provenance::Input);
+                    }
+                }
+                // The pointer's sideways glide moves the shelf under it, left where it put it
+                // until a key moves along it or a click lands on one of its cards.
+                if let InputKind::Pan { dx, y, .. } = input.kind {
+                    if dx.is_finite() {
+                        let under = (0..self.shelves.len()).find(|&index| {
+                            let top = self.layout.shelf_y(index, self.scroll.pos);
+                            y >= top && y < top + self.layout.shelf_pitch(index)
+                        });
+                        if let Some(shelf) = under.and_then(|index| self.shelves.get_mut(index)) {
+                            let style = if shelf.landscape { &RowStyle::EPISODE } else { &RowStyle::HOME };
+                            shelf.motion.glide(dx, shelf.elems.len(), style);
+                            fx.invalidate(Provenance::Input);
+                        }
+                    }
                     return Handled::Yes;
                 }
                 if let InputKind::Wheel { dy } = input.kind {
@@ -1288,6 +1324,7 @@ impl<H: LibraryLike> Screen<H> for LibraryScreen {
     fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<nj_machine::machine::FocusKey<u32>>) {
         LibraryScreen::redraw_focused::<H>(self, f, focus)
     }
+    fn glides(&self) -> bool { true }
     fn name(&self) -> &'static str { "library" }
     fn state(&self) -> &dyn LogicalState { self }
     fn crumb(&self, _: &Cx<'_, H>) -> Option<Cow<'_, str>> { None }

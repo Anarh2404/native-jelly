@@ -178,12 +178,16 @@ pub(crate) struct CardRow {
     /// reserving. See [`label_band`]; the screens turn it into a row pitch.
     band: Spring,
     pub base_y: f32,
+    /// **The row is where the pointer's sideways glide put it** ([`glide`](Self::glide)): `update`
+    /// stops steering the scroll to the focused cell until [`unfree`](Self::unfree). A hand-off
+    /// from the pointer: what it decides, `scroll_x`, is in the canon.
+    free: bool,
 }
 impl CardRow {
     /// Motion read by placement/reveal is behavioral state for an owned, replayable screen.
     /// Destructure exhaustively so adding a field requires revisiting the census.
     pub(crate) fn write_motion(&self, c: &mut nj_machine::machine::Canon) {
-        let Self { scale, overflow, focus, scroll_x, lift, band, base_y } = self;
+        let Self { scale, overflow, focus, scroll_x, lift, band, base_y, free: _ } = self;
         c.seq(scale.len());
         for spring in scale { c.f32(spring.pos).f32(spring.vel); }
         for spring in [overflow, scroll_x, lift, band] { c.f32(spring.pos).f32(spring.vel); }
@@ -199,6 +203,7 @@ impl CardRow {
             lift: Spring::at(0.0),
             band: Spring::at(0.0),
             base_y: 0.0,
+            free: false,
         }
     }
     /// Whether every spring sits bit-exactly at its target with no velocity and nothing holds
@@ -240,7 +245,7 @@ impl CardRow {
         self.overflow.step(ot, sty.k_scale, dt);
         if !focused.is_some_and(|f| f >= MAX_ROW_ITEMS) { self.overflow.land(1.0, dt); }
         if let Some(fc) = focused {
-            if n > 0 {
+            if n > 0 && !self.free {
                 self.scroll_x
                     .step(self.scroll_target(fc, n, sty), sty.k_scroll, dt);
             }
@@ -299,6 +304,20 @@ impl CardRow {
     #[cfg(feature = "devtriggers")]
     pub(crate) fn scroll_velocity(&self) -> f32 { self.scroll_x.vel }
 
+    /// **The pointer's sideways glide** (`InputKind::Pan`): move the row by `dx` px now, held to
+    /// its `n` cells, and leave it there: the scroll stops following the focused cell until
+    /// [`unfree`](Self::unfree). Moved directly, frame by frame, so a steady glide is a steady
+    /// motion (a spring stepped toward each frame's target would trail it).
+    pub(crate) fn glide(&mut self, dx: f32, n: usize, sty: &RowStyle) {
+        let vw = SCR_W - 2.0 * sty.margin_x;
+        let max = (n as f32 * (sty.w + sty.gap) - sty.gap - vw).max(0.0);
+        self.scroll_x.jump((self.scroll_x.pos + dx).clamp(0.0, max));
+        self.free = true;
+    }
+    /// The row follows its focused cell again (a key's move along it, a click on one of its cards).
+    pub(crate) fn unfree(&mut self) {
+        self.free = false;
+    }
     /// Restore a saved viewport without animating from the constructor's origin. Clamp against
     /// current content because the row may have shrunk while its screen was covered or evicted.
     pub(crate) fn restore_scroll(&mut self, scroll: f32, n: usize, sty: &RowStyle) {
@@ -1558,6 +1577,29 @@ mod tests {
             row.update(24, None, &RowStyle::HOME, dt);
         }
         assert!(row.at_exact_rest());
+    }
+
+    /// **The pointer's sideways glide moves the row and leaves it there.** A glided row does not
+    /// steer back to its focused cell until `unfree`, and the glide never leaves the row's range.
+    #[test]
+    fn a_glided_row_stays_where_the_glide_put_it_until_it_is_released() {
+        let dt = 1.0 / 60.0;
+        let sty = &RowStyle::HOME;
+        let mut row = CardRow::new();
+        for _ in 0..60 { row.update(24, Some(0), sty, dt); }
+        assert_eq!(row.scroll_x(), 0.0, "premise: the first cell needs no scroll");
+        for _ in 0..30 { row.glide(20.0, 24, sty); }
+        assert_eq!(row.scroll_x(), 600.0, "the glide moves the row by what it is handed");
+        for _ in 0..120 { row.update(24, Some(0), sty, dt); }
+        assert_eq!(row.scroll_x(), 600.0, "a glided row does not steer back to its focused cell");
+        row.unfree();
+        for _ in 0..240 { row.update(24, Some(0), sty, dt); }
+        assert!(row.scroll_x() < 1.0, "released, it brings its focused cell back: {}", row.scroll_x());
+        row.glide(1.0e6, 24, sty);
+        let end = row.scroll_x();
+        assert!(end > 600.0 && end < 1.0e6, "never past the row's end: {end}");
+        row.glide(-1.0e6, 24, sty);
+        assert_eq!(row.scroll_x(), 0.0, "nor before its start");
     }
 
     #[test]
