@@ -270,9 +270,17 @@ impl JfLoopback {
                             let n: usize = query_param(&line, "Size").and_then(|v| v.parse().ok()).unwrap_or(0);
                             let _ = write!(socket, "HTTP/1.1 200 OK\r\nContent-Length: {n}\r\nConnection: close\r\n\r\n");
                             // Paced to roughly 10 Mbit/s: an unpaced loopback measures a link no
-                            // real server has.
-                            for chunk in vec![0x55; n].chunks(50_000) {
-                                let _ = socket.write_all(chunk);
+                            // real server has. Auto reads for a fixed window and hangs up long
+                            // before a 64 MiB body ends, so a failed write ends the answer — this
+                            // server is single-threaded, and the next request waits behind it.
+                            let chunk = [0x55; 50_000];
+                            let mut left = n;
+                            while left > 0 {
+                                let k = left.min(chunk.len());
+                                if socket.write_all(&chunk[..k]).is_err() {
+                                    break;
+                                }
+                                left -= k;
                                 std::thread::sleep(std::time::Duration::from_millis(40));
                             }
                         } else if line.starts_with("GET ") {

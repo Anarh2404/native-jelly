@@ -12,6 +12,7 @@ fn a_partial_source_body_is_not_traced_as_a_successful_measurement() {
         bytes: 64 * 1024,
         elapsed: std::time::Duration::from_millis(500),
         target_reached,
+        settled: None,
     };
     assert_eq!(
         source_probe_sample_outcome(sample(false)),

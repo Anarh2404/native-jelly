@@ -5939,14 +5939,25 @@ fn apply_quality_choice(ps: &mut PlaybackSession, q: Quality) {
 /// Auto quality's one network input: time Jellyfin's `/Playback/BitrateTest` payload and turn
 /// it into the `MaxStreamingBitrate` the negotiation advertises. This is the jellyfin-web /
 /// apiclient convention — measure, then ask for 70% of it so the stream has headroom. Cached per
-/// server for [`BITRATE_TTL`]: the measurement costs a few hundred KiB, and a play started within a
-/// minute of the last one is on the same link.
+/// server for [`BITRATE_TTL`]: the measurement costs up to [`BODY`] of transfer, and a play started
+/// within a minute of the last one is on the same link.
+///
+/// **Bounded by time, not by size.** A fixed small payload measures the connection's TCP ramp-up,
+/// not the link: from the television a 512 KiB body read 78 Mbit/s and a 64 MiB one 253 Mbit/s
+/// over the same Wi-Fi, and the 70% of the first capped an 84 Mbit/s 4K remux into a re-encode.
+/// So the payload is larger than any [`BODY`] window can carry, the read stops at the window, and
+/// the rate is taken after [`SETTLE`] ([`crate::curlio::ThroughputSample::steady_kbps`]) — the
+/// same half-second on a 100 Mbit/s cable and a gigabit LAN, each measured as itself.
 ///
 /// `None` when the server has no Jellyfin seat or the transfer produced no sample; the caller then
 /// advertises no bound and lets the server decide.
 pub(super) fn auto_bitrate_kbps(client: &crate::catalog::Client) -> Option<i64> {
-    const PROBE_BYTES: usize = 500_000;
-    const BUDGET: std::time::Duration = std::time::Duration::from_secs(4);
+    // 64 MiB: the size Jellyfin serves for it (Size is rounded up), and more than 600 ms of even
+    // a gigabit link carries, so the window — not the payload — ends the read.
+    const PROBE_BYTES: usize = 64 << 20;
+    const SETUP: std::time::Duration = std::time::Duration::from_secs(4);
+    const BODY: std::time::Duration = std::time::Duration::from_millis(600);
+    const SETTLE: std::time::Duration = std::time::Duration::from_millis(200);
     const BITRATE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
     let now = std::time::Instant::now();
     if let Some((sid, at, kbps)) = *AUTO_BITRATE.lock().unwrap_or_else(|e| e.into_inner()) {
@@ -5955,7 +5966,7 @@ pub(super) fn auto_bitrate_kbps(client: &crate::catalog::Client) -> Option<i64> 
         }
     }
     let url = client.bitrate_test_url(PROBE_BYTES)?.to_url();
-    let sample = match crate::curlio::sample_whole_throughput_result(&url, PROBE_BYTES, BUDGET, BUDGET) {
+    let sample = match crate::curlio::sample_whole_throughput_result(&url, PROBE_BYTES, SETUP, BODY, SETTLE) {
         Ok(sample) if sample.bytes > 0 => sample,
         Ok(_) => return None,
         Err(failure) => {
@@ -5963,12 +5974,13 @@ pub(super) fn auto_bitrate_kbps(client: &crate::catalog::Client) -> Option<i64> 
             return None;
         }
     };
-    let measured = sample.kbps();
+    let measured = sample.steady_kbps();
     let kbps = measured.saturating_mul(7) / 10;
     crate::player::log(&format!(
-        "auto: bitrate test {}KiB/{}ms measured={measured}kbps -> MaxStreamingBitrate {kbps}kbps",
+        "auto: bitrate test {}KiB/{}ms whole={}kbps steady={measured}kbps -> MaxStreamingBitrate {kbps}kbps",
         sample.bytes / 1024,
         sample.elapsed.as_millis(),
+        sample.kbps(),
     ));
     let kbps = i64::try_from(kbps).unwrap_or(i64::MAX);
     *AUTO_BITRATE.lock().unwrap_or_else(|e| e.into_inner()) = Some((client.id(), now, kbps));
