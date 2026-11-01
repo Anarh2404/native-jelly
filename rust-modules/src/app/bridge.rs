@@ -3078,6 +3078,8 @@ pub(crate) fn text_field_owns_input(d: &Dispatcher<AppHost>) -> bool {
         || (!d.surface_up()
             && d.top_screen().and_then(|screen| screen.as_any())
                 .is_some_and(|screen| screen.is::<crate::screens::jf_login::JfLoginScreen>()))
+        // A family page answers to the surface, which has no way to name its type from here.
+        || d.top_surface_name() == Some(crate::screens::root_back::NAME)
 }
 
 /// **Does the page under the pointer glide at the screen's edges?** No surface is up and the top

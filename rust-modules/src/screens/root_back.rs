@@ -22,6 +22,9 @@ use nj_platform::i18n::msg;
 use super::family::{form_activate, form_focus, form_right_target, InnerHost, SettingsPage};
 use super::registry::{AppFx, PreferenceCmd, BAND};
 
+/// The page's heartbeat word, and how the loop knows this page takes committed text.
+pub(crate) const NAME: &str = "root-back";
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum RowId { Home, Exit, App }
 
@@ -303,7 +306,7 @@ impl Machine<InnerHost> for RootBackPage {
 crate::focusable_via_view!(RootBackPage, InnerHost, view);
 
 impl Screen<InnerHost> for RootBackPage {
-    fn name(&self) -> &'static str { "root-back" }
+    fn name(&self) -> &'static str { NAME }
     fn state(&self) -> &dyn LogicalState { &self.state }
     fn crumb(&self, _cx: &Cx<'_, InnerHost>) -> Option<Cow<'_, str>> { Some(Cow::Borrowed(msg::settings_title())) }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}

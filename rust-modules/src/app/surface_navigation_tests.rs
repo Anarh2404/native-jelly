@@ -397,6 +397,26 @@ fn player_diagnostics_hide_behind_any_open_player_overlay() {
     }
 }
 
+/// **The app id page is a text field (issue #29).** Found in the simulator: the keyboard came up and
+/// the row showed its caret, but the loop only hands committed text to the owned pages this names,
+/// so what was typed went to the legacy queue and the row stayed empty.
+#[test]
+fn the_back_on_home_page_owns_committed_text_and_the_rest_of_settings_does_not() {
+    let _g = nj_base::testlock::serial();
+    let mut d = Dispatcher::<AppHost>::new();
+    let mut rig = Bridge::for_test(|| 0);
+    frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
+    open_settings(&mut d);
+    frame(&mut d, &mut rig, AppArg::Home, tick(1), vec![]);
+    assert!(!text_field_owns_input(&d), "the Settings root types nothing");
+    let mut d = Dispatcher::<AppHost>::new();
+    frame(&mut d, &mut rig, AppArg::Home, tick(2), vec![]);
+    open_settings_at(&mut d, SettingsPage::RootBack);
+    frame(&mut d, &mut rig, AppArg::Home, tick(3), vec![]);
+    assert_eq!(overlay_word(&d), Some("root-back"));
+    assert!(text_field_owns_input(&d), "typed text must reach the row");
+}
+
 /// Phase 5b: the Settings surface is PRESENTED on the tree, owns input from its first frame,
 /// names the heartbeat word of its top page, walks its own stack on BACK (root → Legal →
 /// back → root) and only then lets the container dismiss it — with the app's page untouched.
