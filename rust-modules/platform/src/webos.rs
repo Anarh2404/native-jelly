@@ -199,7 +199,7 @@ fn probe_jail() {
 
 /// **Show the television's own Home, and keep running.**
 ///
-/// This is what BACK does when the app's navigation has nowhere left to go — see `app.rs`'s
+/// This is what BACK does by default when the app's navigation has nowhere left to go — see `app.rs`'s
 /// `back_at_root`. It is NOT a quit: the process stays alive, webOS backgrounds it (`0x103`/`0x104`
 /// reach the SDL loop, and `0x105`/`0x106` when the launcher tile brings it back), and the app
 /// comes back as the SAME LIVE PROCESS. Not necessarily to the same picture, and not necessarily to
@@ -274,7 +274,7 @@ pub fn go_home() {
     let sam_only = mode == "sam";
     if !nj_base::task::spawn_small("platform home", move || {
         if probe { ls2_probe(); }
-        else if !launch_home() {
+        else if !launch(HOME_APP_ID) {
             if sam_only { nj_base::eventlog::log("gohome: no fallback — the trigger forced SAM only"); }
             else { HOME_MINIMIZE.store(true, std::sync::atomic::Ordering::Release); }
         }
@@ -282,6 +282,24 @@ pub fn go_home() {
     }) {
         HOME_PENDING.store(false, std::sync::atomic::Ordering::Release);
         if !probe && !sam_only { minimize(); }
+    }
+}
+
+/// [`go_home`] for a viewer whose launcher is another app (issue #29). A refusal — a mistyped id, an
+/// app since removed — must not leave BACK doing nothing, so it falls through to Home and then to
+/// the minimize leg.
+pub fn launch_app(id: &str) {
+    nj_base::eventlog::log(&format!("gohome: request app={id}"));
+    if HOME_PENDING.swap(true, std::sync::atomic::Ordering::AcqRel) { return; }
+    let target = id.to_owned();
+    if !nj_base::task::spawn_small("platform home", move || {
+        if !launch(&target) && !launch(HOME_APP_ID) {
+            HOME_MINIMIZE.store(true, std::sync::atomic::Ordering::Release);
+        }
+        HOME_PENDING.store(false, std::sync::atomic::Ordering::Release);
+    }) {
+        HOME_PENDING.store(false, std::sync::atomic::Ordering::Release);
+        minimize();
     }
 }
 
@@ -301,10 +319,17 @@ pub fn poll_home() {
 /// minimize leg instead of leaving the user on a screen whose BACK did nothing.
 const HOME_APP_ID: &str = "com.webos.app.home";
 
+/// SAM's `launch` request for `id`. Built by a serializer rather than a format string: the id may be
+/// something the viewer typed.
+#[cfg_attr(any(feature = "hostsim", feature = "test-support"), allow(dead_code))]
+fn launch_payload(id: &str) -> String {
+    serde_json::json!({ "id": id }).to_string()
+}
+
 #[cfg(any(feature = "hostsim", test, feature = "test-support"))]
-fn launch_home() -> bool {
+fn launch(id: &str) -> bool {
     nj_base::eventlog::log(&format!(
-        "gohome: no LS2 bus off-device — the root press would launch {HOME_APP_ID} on a television"
+        "gohome: no LS2 bus off-device — the root press would launch {id} on a television"
     ));
     true
 }
@@ -397,8 +422,8 @@ pub fn system_locale() -> crate::tv::LocaleReply {
 }
 
 #[cfg(all(not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
-fn launch_home() -> bool {
-    let payload = format!("{{\"id\":\"{HOME_APP_ID}\"}}");
+fn launch(id: &str) -> bool {
+    let payload = launch_payload(id);
     let started = std::time::Instant::now();
     let outcome = ls2::call_once("luna://com.webos.applicationManager/launch", &payload);
     let ms = started.elapsed().as_millis();
@@ -474,7 +499,7 @@ pub fn bind_window(_win: *mut std::os::raw::c_void) {}
 /// One LS2 request/reply, on the calling thread.
 ///
 /// **The one LS2 client this process has**, shared by every caller that speaks to the bus from
-/// this application: [`super::launch_home`] (one 600 ms call on the SDL main thread) and
+/// this application: [`super::launch`] (one 600 ms call on the SDL main thread) and
 /// `keymanager::platform::Client` (a registration kept alive across begin → finish, 4 s budget).
 /// Until 2026-09-04 it was two private copies, both registering with
 /// `LSRegisterApplicationService(NULL, app_id)`, and on this set that registration is REFUSED:
@@ -494,7 +519,7 @@ pub fn bind_window(_win: *mut std::os::raw::c_void) {}
 /// | **`LSRegister(NULL)`** | registered, and `com.webos.applicationManager/getForegroundAppInfo` answered it |
 ///
 /// So every caller registers as a plain anonymous client, [`register`]. The role file still
-/// decides what such a client may CALL — the probe proves SAM's read-only method; `launch_home`
+/// decides what such a client may CALL — the probe proves SAM's read-only method; `launch`
 /// grades the reply of the one that matters — and the hub's refusal, when there is one, travels
 /// in [`RegisterFail`] to the caller's log line instead of being freed. Anonymous clients do not
 /// collide with each other, so nothing here is serialised; a registration lives for one caller's
@@ -935,6 +960,13 @@ pub mod ls2 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_launch_names_the_app_in_well_formed_json() {
+        assert_eq!(launch_payload(HOME_APP_ID), r#"{"id":"com.webos.app.home"}"#);
+        let quoted: serde_json::Value = serde_json::from_str(&launch_payload("a\"b")).unwrap();
+        assert_eq!(quoted["id"], "a\"b");
+    }
 
     #[test]
     fn storage_activation_reply_keeps_only_status_and_numeric_error_code() {

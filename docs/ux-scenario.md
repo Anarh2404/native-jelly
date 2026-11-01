@@ -114,14 +114,15 @@ QA:
 
 - **Search is a peer, not a page.** BACK from Search returns to Home. What Search *opens* stacks;
   Search itself does not.
-- **BACK at Home's own root is the end of the chain.** It does not quit and it does not ask. It
-  hands the screen back to the television's own Home, with the app still running (§5.9).
+- **BACK at Home's own root is the end of the chain.** By default it does not quit and it does not
+  ask. It hands the screen back to the television's own Home, with the app still running (§5.9).
+  Settings → *Back on Home* can make it exit the app or open another app instead (issue #29).
 
 ### 2.3 EXIT
 
-The remote's **EXIT** key terminates the app outright, and since 2026-09-03 it is the ONLY key
-that does: BACK cannot quit from anywhere, by accident or otherwise, and a key labelled EXIT
-carries no such ambiguity (`app.rs`, the `Key::Exit` arm). Device-verified 2026-08-22: press →
+The remote's **EXIT** key terminates the app outright, and since 2026-09-03 it is the only key
+that does unless the viewer chose *Exit the app* for BACK in Settings: otherwise BACK cannot quit
+from anywhere, by accident or otherwise, and a key labelled EXIT carries no such ambiguity (`app.rs`, the `Key::Exit` arm). Device-verified 2026-08-22: press →
 `EXIT key: terminating` in the event log → the process is gone.
 
 ---

@@ -286,10 +286,11 @@ pub enum Key {
     /// because `key_play` and `key_pause` are each one direction of the toggle.
     PlayPause,
     Stop,
-    /// The remote's EXIT key, and since 2026-09-03 the ONLY key that ends the process. BACK at a
-    /// root hands the screen back to the television and leaves the app running (`tv::home::go_home`),
-    /// because a press people lean on must not be able to quit by accident; a key labelled EXIT
-    /// carries no such ambiguity.
+    /// The remote's EXIT key, and since 2026-09-03 the only key that ends the process unasked. BACK
+    /// at a root hands the screen back to the television and leaves the app running
+    /// (`tv::home::go_home`), because a press people lean on must not be able to quit by accident,
+    /// unless the viewer chose that in Settings (`screens::root_back`); a key labelled EXIT carries
+    /// no such ambiguity.
     Exit,
     /// The Magic Remote reporting that its pointer auto-hid ([`WCODE_POINTER_HIDDEN`]).
     PointerHidden,

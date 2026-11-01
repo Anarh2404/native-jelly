@@ -138,6 +138,7 @@ pub(crate) enum PreferenceCmd {
     InstantDpadSeeking { value: crate::catalog::session::InstantDpadSeeking, reply: std::sync::mpsc::Sender<bool> },
     EpisodeNavigation { value: crate::catalog::session::EpisodeNavigation, reply: std::sync::mpsc::Sender<bool> },
     SkipInterval { interval: crate::catalog::session::SkipInterval, reply: std::sync::mpsc::Sender<bool> },
+    RootBack { choice: crate::catalog::session::RootBack, reply: std::sync::mpsc::Sender<bool> },
     SubtitleSize { size: crate::catalog::session::SubtitleSize, reply: std::sync::mpsc::Sender<bool> },
     SubtitlePosition { position: crate::catalog::session::SubtitlePosition, reply: std::sync::mpsc::Sender<bool> },
     Language { language: nj_platform::i18n::Preference, reply: std::sync::mpsc::Sender<bool> },

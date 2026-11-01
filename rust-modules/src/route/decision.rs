@@ -5564,6 +5564,33 @@ pub(crate) fn set_skip_interval(interval: SkipInterval) -> bool {
     saved
 }
 
+/// What BACK does at a root — install-wide. Held here rather than read from the session at the press
+/// because a press must not be what schedules a session load.
+static ROOT_BACK: std::sync::Mutex<RootBack> = std::sync::Mutex::new(RootBack::PlatformHome);
+
+pub(crate) fn root_back() -> RootBack {
+    ROOT_BACK.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+pub(crate) fn restore_root_back(choice: RootBack) {
+    #[cfg(test)]
+    nj_base::testlock::assert_held("root back preference");
+    *ROOT_BACK.lock().unwrap_or_else(|e| e.into_inner()) = choice;
+}
+
+/// Blocking persistence seam, as [`set_skip_interval`]: the live value changes only once the write
+/// is durable.
+pub(crate) fn set_root_back(choice: RootBack) -> bool {
+    let saved = crate::catalog::session::update_with_outcome(|s| Some(s.with_root_back(choice.clone())))
+        .is_some_and(|write| matches!(write.classify(),
+            crate::catalog::session::async_persistence::CompletionOutcome::Durable(_)));
+    if saved {
+        restore_root_back(choice);
+        nj_machine::idle::invalidate();
+    }
+    saved
+}
+
 pub(crate) fn set_default_quality(q: Quality) -> bool {
     let q = supported_quality(q);
     let saved = crate::catalog::session::update_with_outcome(|s| Some(s.with_playback_quality(q)))

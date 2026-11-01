@@ -136,6 +136,10 @@ pub(crate) unsafe fn run(app: &mut App) {
         }
         nj_platform::tv::window::pump_bus();
         nj_platform::tv::home::poll();
+        if nj_platform::tv::home::take_exit() {
+            log("root press: terminating, as Settings asks");
+            app.running = false;
+        }
         // The one toast key mode owes the viewer (`net::keypin`'s facts), on every route.
         clock_notice.poll();
         ingest(app, fr);
@@ -1162,7 +1166,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             // The remote's EXIT key — LG's checklist item 38 wants the app terminated,
             // and unlike BACK at Home's root there is nothing ambiguous about a key
             // labelled EXIT, so unlike BACK it really does end the process — and it
-            // is now the only key that does.
+            // is now the only key that does unless Settings said otherwise for BACK.
             log("EXIT key: terminating");
             app.running = false;
         // (Two player arms stood here — STOP's `exit_player`, and LEFT/RIGHT's `key_scrub`. Both

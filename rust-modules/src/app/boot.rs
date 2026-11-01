@@ -916,6 +916,7 @@ pub(crate) unsafe fn construct(
     crate::route::restore_subtitle_position(session.subtitle_position());
     crate::route::restore_next_episode_mode(session.next_episode_mode());
     crate::route::restore_skip_interval(session.skip_interval());
+    crate::route::restore_root_back(session.root_back());
     crate::route::restore_instant_dpad_seeking(session.instant_dpad_seeking());
     crate::route::restore_episode_navigation(session.episode_navigation());
     // The subtitle tone rides the same file and the same moment: a preference, restored once.

@@ -2010,7 +2010,8 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   scrub-seek, **BACK/Stop** returns. The strip's **last pill is Search** (a mark, not a word) — a
   peer of Home and the Library, not a page stacked over them, so BACK from it returns to Home. BACK
   at **Home's own root** is the end of that chain and hands the screen back to the TELEVISION
-  (`app::input::back_at_root` → `tv::home::go_home`), with the app still running — which is what the
+  (`app::input::back_at_root` → `tv::home::go_home`), with the app still running, unless the viewer
+  chose *Exit the app* or *Open another app* under Settings → *Back on Home* (issue #29) — which is what the
   platform itself does at an app's entry page on this firmware, and what LG's submission rules
   require. **The same rule covers three roots** — Home, the who's-watching picker and the QR
   sign-in — which is what issues #16–#18 were: the latter two used to DROP a root BACK, because
@@ -2025,7 +2026,7 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   than stepping or dismissing, and doing so does NOT answer or dismiss the question — selecting the
   app's tile again lands straight back on it, exactly as Home, the picker and QR sign-in do at
   theirs (`app/bridge.rs`'s `back_at_the_first_consent_stage_is_the_root_press_and_leaves_the_question_up`
-  pins both halves). BACK is no longer a quit anywhere — the remote's EXIT key
+  pins both halves). A default BACK is no longer a quit anywhere — the remote's EXIT key
   still is, and `closeByAppId` is still how `make kill`, `tests/run.py` and `tools/tv-session.sh`
   close the app — so the `/tmp/nativejelly-noexitconfirm` bypass went with the "Exit PlxNative?"
   alert it existed for (both retired 2026-09-03). Text

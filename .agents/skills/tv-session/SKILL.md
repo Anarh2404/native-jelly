@@ -410,7 +410,7 @@ the TV is signed in as whatever the automation chose.
   NOT that, it closes first and waits for a CHANGED pid. A webOS 5+ set (full-screen launcher)
   should background the app instead, and is unmeasured.
   `tv-session.sh down` still closes through SAM and is unaffected; the remote's EXIT key is now the
-  only key that ends the process.
+  only key that ends the process, unless Settings → *Back on Home* says *Exit the app*.
 - **Clicks need the jitter**, which the app's injection path already applies: a pointer
   click after D-pad use is swallowed unless enough motion accumulates first. Hover is
   deliberately *not* forwarded (it used to park focus on a tab pill so the next ENTER

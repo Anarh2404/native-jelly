@@ -131,7 +131,8 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
 // `ForegroundLifecycle` type itself does not cover them.
 #[cfg(test)]
 mod root_back_tests {
-    //! **BACK at a ROOT hands the screen back to the television, and the app keeps running.**
+    //! **BACK at a ROOT hands the screen back to the television, and the app keeps running**, unless
+    //! the viewer chose otherwise in Settings (`a_root_press_follows_the_saved_choice`).
     //!
     //! [`back_at_root`] is driven for real — it is the app's whole answer to "there is nowhere
     //! further back to go", and the regression to catch is a future edit putting `running = false`,
@@ -170,6 +171,32 @@ mod root_back_tests {
             before + 1,
             "BACK at Home's root must ask webOS for its Home screen"
         );
+        nj_platform::tv::home::release_root_press();
+    }
+
+    /// **The press does what the viewer chose (issue #29).** Exit and another app ask nothing of
+    /// the television's Home; the default still does.
+    #[test]
+    fn a_root_press_follows_the_saved_choice() {
+        use crate::route::RootBack;
+        let _g = nj_base::testlock::serial();
+        let press = |choice: RootBack| {
+            crate::route::restore_root_back(choice);
+            nj_platform::tv::home::release_root_press();
+            nj_platform::tv::home::take_launched();
+            nj_platform::tv::home::take_exit();
+            let before = nj_platform::tv::home::home_requests();
+            back_at_root();
+            (
+                nj_platform::tv::home::home_requests() - before,
+                nj_platform::tv::home::take_exit(),
+                nj_platform::tv::home::take_launched(),
+            )
+        };
+        assert_eq!(press(RootBack::PlatformHome), (1, false, vec![]));
+        assert_eq!(press(RootBack::Exit), (0, true, vec![]));
+        assert_eq!(press(RootBack::LaunchApp("tld.my.launcher".into())), (0, false, vec!["tld.my.launcher".to_string()]));
+        crate::route::restore_root_back(RootBack::PlatformHome);
         nj_platform::tv::home::release_root_press();
     }
 

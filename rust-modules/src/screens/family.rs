@@ -88,6 +88,8 @@ pub(crate) enum SettingsPage {
     ConsentStage(u8),
     /// One playback / account preference's choice list, pushed from Playback or Audio & Subtitles.
     Picker(PickerKind),
+    /// What BACK does at a root (`screens::root_back`).
+    RootBack,
 }
 
 /// Which preference a [`SettingsPage::Picker`] edits. The parent page (`Playback` for the local ones,
@@ -151,6 +153,7 @@ impl ScreenArg for SettingsPage {
             SettingsPage::Preview(_) => 106,
             SettingsPage::ConsentStage(_) => 107,
             SettingsPage::Picker(_) => 112,
+            SettingsPage::RootBack => 113,
         })
     }
     fn title(&self) -> Option<&str> {
@@ -186,7 +189,8 @@ impl LogicalState for SettingsPage {
             | SettingsPage::Favourites
             | SettingsPage::Privacy
             | SettingsPage::Legal
-            | SettingsPage::About => 0,
+            | SettingsPage::About
+            | SettingsPage::RootBack => 0,
             SettingsPage::Document(i) | SettingsPage::Preview(i) | SettingsPage::ConsentStage(i) => *i,
             SettingsPage::Picker(kind) => *kind as u8,
         });
@@ -206,6 +210,7 @@ impl LogicalState for SettingsPage {
             SettingsPage::Preview(_) => "preview",
             SettingsPage::ConsentStage(_) => "stage",
             SettingsPage::Picker(_) => "picker",
+            SettingsPage::RootBack => "root-back",
         });
         if let SettingsPage::Document(i) | SettingsPage::Preview(i) | SettingsPage::ConsentStage(i) = self {
             out.push_str(&format!("[{i}]"));
@@ -364,6 +369,7 @@ mod tests {
             SettingsPage::Preview(0),
             SettingsPage::ConsentStage(0),
             SettingsPage::Picker(PickerKind::Quality),
+            SettingsPage::RootBack,
         ];
         let mut ids: Vec<u32> = pages.iter().map(|p| crate::ui::screen::ScreenArg::id(p).0).collect();
         ids.sort_unstable();

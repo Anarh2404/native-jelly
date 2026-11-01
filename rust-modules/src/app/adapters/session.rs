@@ -949,7 +949,7 @@ impl SessionAdapter {
             Resources::Live { .. } => {
                 match super::super::input::after_cancel(resumed) {
                     super::super::input::AfterCancel::BackedOut => nj_platform::tv::home::release_root_press(),
-                    super::super::input::AfterCancel::Home => nj_platform::tv::home::go_home(),
+                    super::super::input::AfterCancel::Home => super::super::input::hand_screen_back(),
                 }
             }
             #[cfg(test)]

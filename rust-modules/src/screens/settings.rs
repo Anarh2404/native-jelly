@@ -309,6 +309,12 @@ impl RouteSurface {
                     MachineId::Instance(self.id),
                     Delivery::Screen(ScreenEvent::Enter(e)),
                 )),
+                // the keyboard belongs to the surface's instance for the same reason; the input it
+                // brings arrives there and is stepped into the top page
+                Fx::Deliver(_, Delivery::Keyboard { up }) => fx.push(Fx::Deliver(
+                    MachineId::Instance(self.id),
+                    Delivery::Keyboard { up },
+                )),
                 Fx::App(a) => fx.push(Fx::App(a)),
                 Fx::Log(l) => fx.push(Fx::Log(l)),
                 Fx::Press(arm) => fx.push(Fx::Press(arm)),
@@ -457,6 +463,7 @@ fn mount_page(
         }
         SettingsPage::Favourites => Box::new(super::onboard::OnboardScreen::settings(entry, cx.views)),
         SettingsPage::Picker(kind) => Box::new(super::preferences::PickerPage::new(entry, kind)),
+        SettingsPage::RootBack => Box::new(super::root_back::RootBackPage::new(entry)),
     }
 }
 
@@ -954,6 +961,7 @@ enum RootId {
     Language,
     AutoSignIn,
     TrailerAutoplay,
+    RootBack,
     /// One server's switch. Its key is [`PLAINTEXT_KEY_BASE`] plus its position in the section
     /// ([`root_form`] assigns it); its identity is the machine, so a rebuild keeps the row.
     Plaintext(ServerMachineId),
@@ -977,6 +985,7 @@ impl FormId for RootId {
             RootId::Privacy => 7,
             RootId::Legal => 8,
             RootId::About => 9,
+            RootId::RootBack => 10,
             // the base; `root_form` adds the position (`item_keyed`)
             RootId::Plaintext(_) => PLAINTEXT_KEY_BASE,
         })
@@ -1159,6 +1168,14 @@ fn root_form(inputs: &RootInputs) -> Form<RootId, Action, SettingsPage> {
             Row::new(nj_platform::i18n::msg::settings_trailers_title())
                 .detail(nj_platform::i18n::msg::settings_trailers_detail())
                 .toggle(inputs.trailer_autoplay),
+        )
+        .item(
+            RootId::RootBack,
+            RowKind::Nav(SettingsPage::RootBack),
+            Action::Door,
+            Row::new(nj_platform::i18n::msg::settings_root_back_title())
+                .detail(nj_platform::i18n::msg::settings_root_back_detail())
+                .chevron(true),
         );
     let has_plaintext = signed_in && !inputs.plaintext.is_empty();
     let mut plaintext = FormSection::new(nj_platform::i18n::msg::settings_plaintext_section()).visible(has_plaintext);

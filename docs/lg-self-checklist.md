@@ -47,7 +47,8 @@ Cancel/Exit confirmation at Home root, where the webOS 23–25 submission expect
 BACK must show the television Home screen. The confirmation is gone. BACK at each of the THREE
 roots implemented 2026-09-03 — Home, the who's-watching picker, the QR sign-in — calls
 `webos::go_home`, which asks SAM to launch the Home launcher and leaves the process running
-(`docs/remote-keys.md` §8). **The first-run consent question was the fourth root and was NOT
+(`docs/remote-keys.md` §8). That stays the default; Settings → *Back on Home* lets a viewer choose
+otherwise for their own install. **The first-run consent question was the fourth root and was NOT
 covered as of that date; it was closed 2026-09-07 in the phase 5b restructure**, when the question
 stopped being a `Popover` (`ui/consent.rs`, whose `on_back` returned a bare `bool` that could not
 tell "stepped back a stage" from "the platform took the screen" — which is exactly the ambiguity

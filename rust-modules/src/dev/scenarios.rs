@@ -988,6 +988,7 @@ fn settings_boot_arm(app: &mut App, fr: &mut Frame) {
                 "privacy" => crate::screens::family::SettingsPage::Privacy,
                 "legal" => crate::screens::family::SettingsPage::Legal,
                 "language" => crate::screens::family::SettingsPage::Language,
+                "root-back" => crate::screens::family::SettingsPage::RootBack,
                 "contribute" => crate::screens::family::SettingsPage::Contribute,
                 "playback" => crate::screens::family::SettingsPage::Playback,
                 // root → Playback → the Quality picker (`SettingsPage::boot_trail`), so BACK works.

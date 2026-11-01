@@ -821,7 +821,7 @@ mod db8_policy_tests {
 
     #[test]
     fn omitted_known_defaults_are_cleared_while_opaque_values_survive() {
-        let known = ["subtitle_size", "subtitle_position", "next_episode_mode", "skip_interval",
+        let known = ["subtitle_size", "subtitle_position", "next_episode_mode", "skip_interval", "root_back",
             "instant_dpad_seeking", "episode_navigation", "server_key_pins", "audio_enhancements"];
         let mut current = serde_json::json!({
             "language": 42, "future_null": null, "future_array": [1, {"enabled": true}]

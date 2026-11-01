@@ -40,7 +40,7 @@ fn signed_out_root_does_not_offer_automatically_sign_in() {
         crate::catalog_fetch::HubsSnapshot::empty_for_test().view(),
     );
     step(&mut s, ScreenEvent::Mount, None);
-    // Playback / Language / Privacy / Legal / About — About is a door, not a switch.
+    // Playback / Language / Back on Home / Privacy / Legal / About — About is a door, not a switch.
     let about = FocusKey {
         entry: EntryId(0),
         elem: root_key(RootId::About),
@@ -194,7 +194,7 @@ fn back_at_the_surface_s_own_root_is_not_handled() {
 }
 
 /// **The remembered-focus round trip (spec §7.3 step 4).** Signed out, the root's rows are
-/// Video & playback / Language / Privacy & data / Legal notices / About PlxNative (signed out
+/// Video & playback / Language / Back on Home / Privacy & data / Legal notices / About PlxNative (signed out
 /// there is no Favourites row), so row 3 is Legal notices. The engine seats
 /// focus there, OK pushes the index, and a BACK must hand focus back to THAT row — not row 0
 /// — which is the one thing `bridge.rs`'s word-only assertions cannot see from outside `app/`.
@@ -819,7 +819,7 @@ fn a_rebuild_keeps_the_row_by_id_and_a_vanished_row_falls_to_its_neighbour() {
 
     for (from, lands) in [
         (RootId::AudioSubtitles, RootId::Language),
-        (RootId::TrailerAutoplay, RootId::Privacy),
+        (RootId::TrailerAutoplay, RootId::RootBack),
         (RootId::Favourites, RootId::Playback),
         (RootId::About, RootId::About),
     ] {

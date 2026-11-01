@@ -358,7 +358,7 @@ pub(super) fn transcode_spec<'a>(
 }
 
 
-pub(crate) use crate::catalog::session::{PlaybackQuality as Quality, DirectPlayMode, NextEpisodeMode, SkipInterval, InstantDpadSeeking, EpisodeNavigation, SubtitleSize, SubtitlePosition};
+pub(crate) use crate::catalog::session::{PlaybackQuality as Quality, DirectPlayMode, NextEpisodeMode, SkipInterval, RootBack, InstantDpadSeeking, EpisodeNavigation, SubtitleSize, SubtitlePosition};
 
 
 /// The ladder IN ORDER, best first. The ONE place row order lives, so the picker's index mapping

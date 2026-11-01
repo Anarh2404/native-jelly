@@ -94,6 +94,7 @@ pub(super) struct SurfaceRig {
     /// How many times BACK reached the root of the ROOT stack (the platform's Home).
     roots: u32,
     pub(super) preference_commands: Vec<registry::PreferenceCmd>,
+    keyboards: Vec<bool>,
 }
 
 impl SurfaceRig {
@@ -105,6 +106,7 @@ impl SurfaceRig {
             directory: Default::default(),
             roots: 0,
             preference_commands: Vec::new(),
+            keyboards: Vec::new(),
         }
     }
 }
@@ -143,6 +145,9 @@ impl Rig<InnerHost> for SurfaceRig {
         _out: &mut Effects<'_, InnerHost>,
     ) {
         if let AppFx::Preferences(command) = effect { self.preference_commands.push(command); }
+    }
+    fn system_keyboard(&mut self, up: bool) {
+        self.keyboards.push(up);
     }
     fn log(&mut self, _line: &str) {}
     fn prepare(&mut self, _b: &mut Budget, _present: &mut Present) {}
@@ -469,15 +474,15 @@ fn a_real_push_seats_the_new_page_fresh_and_a_pop_restores_the_row_that_opened_i
         path(&d, id)
     );
 
-    // Mounting the surface already seats row 0 (its own `Enter::Fresh`); three real DOWNs
-    // move focus — and the engine's remembered cursor for `(id, GroupId(0))` — to row 3.
-    for i in 1..=3u32 {
+    // Mounting the surface already seats row 0 (its own `Enter::Fresh`); four real DOWNs
+    // move focus — and the engine's remembered cursor for `(id, GroupId(0))` — to row 4.
+    for i in 1..=4u32 {
         frame(&mut d, &mut rig, 16 * i, vec![key(Key::Down, tick(16 * i))]);
     }
     let legal_row = d.focus().expect("a row is focused after a real DOWN");
-    assert_eq!(legal_row.elem, root_key(RootId::Legal), "the third DOWN is Legal notices in the signed-out fixture");
+    assert_eq!(legal_row.elem, root_key(RootId::Legal), "the fourth DOWN is Legal notices in the signed-out fixture");
 
-    frame(&mut d, &mut rig, 64, vec![key(Key::Ok, tick(64))]);
+    frame(&mut d, &mut rig, 72, vec![key(Key::Ok, tick(72))]);
     assert!(
         path(&d, id).contains("/legal:"),
         "OK on Legal notices pushed the index: {}",
@@ -667,6 +672,47 @@ fn force_warning_engine_focus_confirms_only_the_chosen_answer() {
     crate::route::restore_direct_play_mode(previous);
 }
 
+/// **The keyboard's whole road through the surface (issue #29).** A page of the family asks for the
+/// television's keyboard; the surface carries the request to the dispatcher in its own name, and
+/// what the keyboard then sends reaches the page through the surface.
+#[test]
+fn a_typed_app_id_reaches_the_page_through_the_surface() {
+    use nj_machine::machine::{Edge, InputKind, TextEdit, Source};
+    let _g = nj_base::testlock::serial();
+    let _sess = scratch_session("composed-root-back");
+    let previous = crate::route::root_back();
+    crate::route::restore_root_back(crate::route::RootBack::PlatformHome);
+    let ok = |ms| {
+        let down = key(Key::Ok, tick(ms));
+        let mut up = down.clone();
+        if let InputKind::Key { edge, .. } = &mut up.kind { *edge = Edge::Up; }
+        vec![down, up]
+    };
+    let (mut d, mut rig, id) = consent_opened(SettingsPage::RootBack);
+    let mut ms = settle_frames(&mut d, &mut rig, 16);
+    ms = walk_to(&mut d, &mut rig, ms, 2);
+    ms += 16;
+    frame(&mut d, &mut rig, ms, ok(ms));
+    for _ in 0..24 { ms += 16; frame(&mut d, &mut rig, ms, vec![]); }
+    assert_eq!(rig.keyboards, [true], "OK on the row raises the keyboard");
+    assert!(path(&d, id).contains("editing=true"), "{}", path(&d, id));
+
+    ms += 16;
+    let text = nj_machine::machine::InputEvent {
+        at: tick(ms), source: Source::Script,
+        kind: InputKind::Text(TextEdit::Commit("tld.my.launcher".into())),
+    };
+    frame(&mut d, &mut rig, ms, vec![text]);
+    ms += 16;
+    frame(&mut d, &mut rig, ms, vec![key(Key::Ok, tick(ms))]);
+    for _ in 0..4 { ms += 16; frame(&mut d, &mut rig, ms, vec![]); }
+    assert_eq!(rig.keyboards, [true, false], "OK on the keyboard lowers it");
+    assert!(matches!(rig.preference_commands.pop(), Some(registry::PreferenceCmd::RootBack {
+        choice: crate::route::RootBack::LaunchApp(ref typed), ..
+    }) if typed == "tld.my.launcher"), "the typed id is what is saved");
+    crate::route::restore_root_back(previous);
+}
+
 /// Owner report: entering Audio & Subtitles from the Settings root landed focus on the LAST row
 /// of the loaded table. The page mounts empty (its rows arrive with the account receipt), so the
 /// push's `FirstInGroup` found no group to seat — and the engine kept the ROOT page's key. Every
@@ -762,9 +808,9 @@ fn a_sign_out_that_drops_the_focused_row_lands_the_engine_on_the_next_survivor()
     assert_eq!(d.focus().map(|k| k.elem), Some(root_key(RootId::TrailerAutoplay)), "premise: signed in, on Trailer autoplay");
     sign_out();
     settle_frames(&mut d, &mut rig, ms);
-    assert_eq!(d.focus().map(|k| k.elem), Some(root_key(RootId::Privacy)),
+    assert_eq!(d.focus().map(|k| k.elem), Some(root_key(RootId::RootBack)),
         "the engine follows the page's identity landing (next survivor), not row 0");
-    assert_eq!(sel_of(&d, id), root_key(RootId::Privacy), "the page and the engine agree");
+    assert_eq!(sel_of(&d, id), root_key(RootId::RootBack), "the page and the engine agree");
 }
 
 #[test]

@@ -163,6 +163,50 @@
       "names": "str"
     }
   },
+  "settings.root_back.title": {
+    "value": "Back on Home",
+    "description": "Settings row and page title: what the remote's BACK button does on the app's Home screen."
+  },
+  "settings.root_back.detail": {
+    "value": "What BACK does when there is nowhere further to go.",
+    "description": "Detail under the row on the Settings root."
+  },
+  "settings.root_back.copy": {
+    "value": "Choose what the BACK button does on Home.",
+    "description": "Explanation under the title of the page."
+  },
+  "settings.root_back.home": {
+    "value": "Show LG Home",
+    "description": "Choice: BACK shows the television's own Home. The app keeps running."
+  },
+  "settings.root_back.home_detail": {
+    "value": "The app stays open in the background.",
+    "description": "Detail under the Show LG Home choice."
+  },
+  "settings.root_back.exit": {
+    "value": "Exit the app",
+    "description": "Choice: BACK closes the app."
+  },
+  "settings.root_back.exit_detail": {
+    "value": "The TV then shows its launcher. Use this with a custom launcher.",
+    "description": "Detail under the Exit the app choice."
+  },
+  "settings.root_back.app": {
+    "value": "Open another app",
+    "description": "Choice: BACK opens the installed app whose id the viewer types."
+  },
+  "settings.root_back.app_detail": {
+    "value": "Enter its app ID, such as com.example.launcher.",
+    "description": "Detail under the Open another app choice while no id has been entered."
+  },
+  "settings.root_back.invalid": {
+    "value": "That is not a valid app ID. Use only letters, numbers, dots, hyphens, plus signs and underscores.",
+    "description": "Shown under the title when the typed id cannot be an app id."
+  },
+  "settings.root_back.save_failed": {
+    "value": "Could not save this choice. Try again.",
+    "description": "Shown under the title when the choice could not be written."
+  },
   "settings.language.title": {
     "value": "Language",
     "description": "Settings, account, onboarding or privacy UI: settings.language.title"

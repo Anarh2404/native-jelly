@@ -24,6 +24,8 @@ pub struct Port {
     pub system_locale: fn() -> LocaleReply,
     pub go_home: fn(),
     pub poll_home: fn(),
+    /// Show another installed app instead of the television's Home. A refusal falls back to Home.
+    pub launch_app: fn(&str),
     pub deliver_toast: fn(&str, toast::Identity) -> toast::Sent,
     pub bind_window: fn(*mut c_void),
     pub grab_surface: fn(*mut c_void),
@@ -58,6 +60,7 @@ static ABSENT: Port = Port {
     system_locale: || LocaleReply::NoPlatform,
     go_home: nothing,
     poll_home: nothing,
+    launch_app: |_| {},
     deliver_toast: toast::deliver_without_port,
     bind_window: |_| {},
     grab_surface: |_| {},

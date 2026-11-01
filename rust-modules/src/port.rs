@@ -23,6 +23,7 @@ static PORT: nj_platform::tv::Port = nj_platform::tv::Port {
     system_locale: nj_platform::webos::system_locale,
     go_home: nj_platform::webos::go_home,
     poll_home: nj_platform::webos::poll_home,
+    launch_app: nj_platform::webos::launch_app,
     deliver_toast: nj_platform::webos::toast::deliver,
     bind_window: nj_platform::webos::bind_window,
     grab_surface: crate::system::sys_grab_wayland,

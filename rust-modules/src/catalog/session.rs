@@ -627,6 +627,10 @@ pub struct Session {
     /// field — committed replay fixtures included — serializes exactly as it did before.
     #[serde(default, deserialize_with = "de_soft_skip_interval", skip_serializing_if = "is_default_skip_interval")]
     pub(crate) skip_interval: SkipInterval,
+    /// **What BACK does at a root** — see [`RootBack`]. Install-wide, skipped at the default like
+    /// [`Session::skip_interval`].
+    #[serde(default, deserialize_with = "de_soft_root_back", skip_serializing_if = "is_default_root_back")]
+    pub(crate) root_back: RootBack,
     #[serde(default, deserialize_with = "de_soft_instant_dpad_seeking", skip_serializing_if = "is_default_instant_dpad_seeking")]
     pub(crate) instant_dpad_seeking: InstantDpadSeeking,
     #[serde(default, deserialize_with = "de_soft_episode_navigation", skip_serializing_if = "is_default_episode_navigation")]
@@ -749,6 +753,8 @@ struct CanonicalSessionPreferences {
     next_episode_mode: NextEpisodeMode,
     #[serde(default, deserialize_with = "de_soft_skip_interval", skip_serializing_if = "is_default_skip_interval")]
     skip_interval: SkipInterval,
+    #[serde(default, deserialize_with = "de_soft_root_back", skip_serializing_if = "is_default_root_back")]
+    root_back: RootBack,
     #[serde(default, deserialize_with = "de_soft_instant_dpad_seeking", skip_serializing_if = "is_default_instant_dpad_seeking")]
     instant_dpad_seeking: InstantDpadSeeking,
     #[serde(default, deserialize_with = "de_soft_episode_navigation", skip_serializing_if = "is_default_episode_navigation")]
@@ -792,6 +798,7 @@ impl Default for CanonicalSessionPreferences {
             subtitle_position: SubtitlePosition::Low,
             next_episode_mode: NextEpisodeMode::Countdown,
             skip_interval: SkipInterval::Seconds10,
+            root_back: RootBack::PlatformHome,
             instant_dpad_seeking: InstantDpadSeeking::Off,
             episode_navigation: EpisodeNavigation::On,
             plaintext_consent: Vec::new(),
@@ -856,6 +863,7 @@ fn split_public(session: &Session) -> Result<nj_platform::storage::state::Public
         subtitle_position: session.subtitle_position,
         next_episode_mode: session.next_episode_mode,
         skip_interval: session.skip_interval,
+        root_back: session.root_back.clone(),
         instant_dpad_seeking: session.instant_dpad_seeking,
         episode_navigation: session.episode_navigation,
         plaintext_consent: session.plaintext_consent.clone(),
@@ -932,6 +940,7 @@ pub(crate) fn join_canonical(
         subtitle_position: preferences.subtitle_position,
         next_episode_mode: preferences.next_episode_mode,
         skip_interval: preferences.skip_interval,
+        root_back: preferences.root_back,
         instant_dpad_seeking: preferences.instant_dpad_seeking,
         episode_navigation: preferences.episode_navigation,
         plaintext_consent: preferences.plaintext_consent,
@@ -967,6 +976,7 @@ fn public_session(public: &nj_platform::storage::state::PublicPayload) -> Sessio
         subtitle_position: preferences.subtitle_position,
         next_episode_mode: preferences.next_episode_mode,
         skip_interval: preferences.skip_interval,
+        root_back: preferences.root_back,
         instant_dpad_seeking: preferences.instant_dpad_seeking,
         episode_navigation: preferences.episode_navigation,
         plaintext_consent: preferences.plaintext_consent,
@@ -1374,6 +1384,21 @@ pub(crate) enum SkipInterval {
     Seconds30,
     #[serde(rename = "60s")]
     Seconds60,
+}
+
+/// What BACK does at a root (issue #29). Absence is [`RootBack::PlatformHome`], what every build
+/// before this preference did. SAM keeps the process alive across a launch of LG's Home, but on
+/// webOS 22 its `lite` memory policy closes it for any other launcher, so a viewer with their own
+/// launcher may prefer to leave outright and let SAM show its idle app.
+#[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum RootBack {
+    #[default]
+    #[serde(rename = "home")]
+    PlatformHome,
+    #[serde(rename = "exit")]
+    Exit,
+    #[serde(rename = "app")]
+    LaunchApp(String),
 }
 
 impl SkipInterval {
@@ -2373,6 +2398,27 @@ fn is_default_skip_interval(interval: &SkipInterval) -> bool {
     *interval == SkipInterval::default()
 }
 
+/// A root-press spelling this build does not know, or an id that could not name an app, degrades to
+/// the platform's Home.
+fn de_soft_root_back<'de, D>(d: D) -> Result<RootBack, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Ok(v) = serde_json::Value::deserialize(d) else {
+        return Ok(RootBack::default());
+    };
+    Ok(match serde_json::from_value::<RootBack>(v) {
+        Ok(RootBack::LaunchApp(id)) if !nj_platform::tv::home::valid_app_id(&id) => RootBack::default(),
+        Ok(choice) => choice,
+        Err(_) => RootBack::default(),
+    })
+}
+
+/// `skip_serializing_if` needs a function, not just `PartialEq` with `Default::default()`.
+fn is_default_root_back(choice: &RootBack) -> bool {
+    *choice == RootBack::default()
+}
+
 /// The audio-enhancement toggle is a preference too: an unknown shape degrades to both flags
 /// off rather than failing the enclosing [`Session`].
 fn de_soft_audio_enhancements<'de, D>(d: D) -> Result<crate::catalog::AudioEnhancements, D::Error>
@@ -2650,6 +2696,16 @@ impl Session {
     pub(crate) fn with_skip_interval(&self, interval: SkipInterval) -> Self {
         let mut next = self.clone();
         next.skip_interval = interval;
+        next
+    }
+
+    pub(crate) fn root_back(&self) -> RootBack {
+        self.root_back.clone()
+    }
+
+    pub(crate) fn with_root_back(&self, choice: RootBack) -> Self {
+        let mut next = self.clone();
+        next.root_back = choice;
         next
     }
 
@@ -5795,6 +5851,45 @@ mod next_episode_mode_tests {
             let (public, protected) = split_canonical(&session).unwrap();
             assert_eq!(join_canonical(&public, &protected).unwrap().next_episode_mode(), mode);
             assert_eq!(public_session(&public).next_episode_mode(), mode);
+        }
+    }
+}
+
+/// `Session::root_back`: soft-parse and omit-at-default, like the skip interval below.
+#[cfg(test)]
+mod root_back_tests {
+    use super::*;
+
+    #[test]
+    fn a_value_this_build_cannot_use_reads_as_the_platform_home() {
+        for value in [
+            serde_json::json!({"root_back": null}),
+            serde_json::json!({"root_back": "future"}),
+            serde_json::json!({"root_back": 30}),
+            serde_json::json!({"root_back": {"app": 7}}),
+            serde_json::json!({"root_back": {"app": ""}}),
+            serde_json::json!({"root_back": {"app": "a\"b"}}),
+        ] {
+            let session: Session = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(session.root_back(), RootBack::PlatformHome, "{value}");
+        }
+    }
+
+    #[test]
+    fn the_default_is_not_written_and_every_choice_round_trips() {
+        let session = Session::default();
+        assert_eq!(session.root_back(), RootBack::PlatformHome);
+        assert!(!serde_json::to_string(&session).unwrap().contains("root_back"));
+        let (public, _) = split_canonical(&session).unwrap();
+        assert!(public.preferences.get("root_back").is_none());
+        for choice in [RootBack::Exit, RootBack::LaunchApp("tld.my.launcher".into())] {
+            let session = Session::default().with_root_back(choice.clone());
+            let json = serde_json::to_string(&session).unwrap();
+            let round: Session = serde_json::from_str(&json).unwrap();
+            assert_eq!(round.root_back(), choice);
+            let (public, protected) = split_canonical(&session).unwrap();
+            assert_eq!(join_canonical(&public, &protected).unwrap().root_back(), choice);
+            assert_eq!(public_session(&public).root_back(), choice);
         }
     }
 }

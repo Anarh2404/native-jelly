@@ -2547,6 +2547,7 @@ pub(crate) fn follow_auth_landing(pages: &mut Dispatcher<AppHost>, bridge: &mut 
         crate::route::restore_subtitle_position(saved.subtitle_position());
         crate::route::restore_next_episode_mode(saved.next_episode_mode());
         crate::route::restore_skip_interval(saved.skip_interval());
+        crate::route::restore_root_back(saved.root_back());
         crate::route::restore_instant_dpad_seeking(saved.instant_dpad_seeking());
         crate::route::restore_episode_navigation(saved.episode_navigation());
         crate::player::restore_subtitle_tone(saved.subtitle_tone());

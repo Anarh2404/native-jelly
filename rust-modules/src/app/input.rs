@@ -1548,14 +1548,24 @@ pub(crate) fn key_back(
 /// pulls the Starfish/ACB seam into the link), so without this split the one branch that matters
 /// most could only be graded by reading it.
 ///
-/// **It does not end the process, and nothing about a BACK press does any more.** The remote's own
-/// EXIT key still terminates (LG checklist item 38), and a script that wants the app closed uses
+/// **By default it does not end the process**; only a viewer who chose *Exit the app* for this press
+/// in Settings gets that, through [`hand_screen_back`]. The remote's own EXIT key still terminates (LG checklist item 38), and a script that wants the app closed uses
 /// SAM's `closeByAppId` exactly as `make kill`, `tests/run.py` and `tools/tv-session.sh` already do.
 /// That is why the old `/tmp/nativejelly-noexitconfirm` bypass went with the alert: it existed to let
-/// a headless caller quit by pressing BACK, and BACK is no longer a quit for anybody.
+/// a headless caller quit by pressing BACK, and a default BACK is no quit for it to rely on.
 pub(crate) fn back_at_root() {
     if nj_platform::tv::home::take_root_press() {
-        nj_platform::tv::home::go_home();
+        hand_screen_back();
+    }
+}
+
+/// A claimed root press: what the viewer chose in Settings (issue #29), the television's Home unless
+/// they chose otherwise.
+pub(crate) fn hand_screen_back() {
+    match crate::route::root_back() {
+        crate::route::RootBack::PlatformHome => nj_platform::tv::home::go_home(),
+        crate::route::RootBack::Exit => nj_platform::tv::home::request_exit(),
+        crate::route::RootBack::LaunchApp(id) => nj_platform::tv::home::launch_app(&id),
     }
 }
 

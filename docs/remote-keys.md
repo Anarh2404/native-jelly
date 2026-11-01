@@ -363,13 +363,15 @@ and keeps running (`app::input::back_at_root` → `webos::go_home`, which asks S
 `com.webos.app.home` and falls back to minimizing the surface). At the consent stage the request is
 raised by the screen itself (`screens/consent.rs` pushes `LoopReq::BackAtRoot`) and performed by
 `app/run.rs`'s request drain; the question is left up rather than answered or dismissed, and
-selecting the tile again lands straight back on it. It does not ask, and it does not quit. The
-remote's own EXIT key still terminates (checklist #38), and a script that wants the app closed uses
+selecting the tile again lands straight back on it. It does not ask, and by default it does not
+quit: Settings → *Back on Home* (`screens/root_back.rs`, issue #29) lets a viewer with their own
+launcher choose *Exit the app* or *Open another app* instead, and a refused launch falls back to
+Home. The remote's own EXIT key still terminates (checklist #38), and a script that wants the app closed uses
 SAM's `closeByAppId` exactly as
 `make kill`, `tests/run.py` and `tools/tv-session.sh` already do — which is why the
 `/tmp/nativejelly-noexitconfirm` bypass went away with the "Exit PlxNative?" alert rather than being
-kept: it existed only to let a caller quit by pressing BACK, and BACK is no longer a quit for
-anybody.
+kept: it existed only to let a caller quit by pressing BACK, and a default BACK is no longer a
+quit.
 
 **What replaced the confirmation is the platform's own behaviour, not its absence.** The alert was
 added deliberately on 2026-08-21 and the warning that stood here — do not delete it on the strength

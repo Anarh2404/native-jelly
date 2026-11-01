@@ -75,10 +75,69 @@ pub fn poll() {
     (super::port().poll_home)()
 }
 
+#[cfg(any(test, feature = "test-support"))]
+static LAUNCHED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// The ids [`launch_app`] was asked for since the last call. **Test-only**, for the same reason as
+/// [`home_requests`].
+#[cfg(any(test, feature = "test-support"))]
+pub fn take_launched() -> Vec<String> {
+    std::mem::take(&mut *LAUNCHED.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// **Show another installed app and keep running**, for a television whose launcher is not LG's
+/// (issue #29). Not rate-limited here, like [`go_home`].
+pub fn launch_app(id: &str) {
+    #[cfg(any(test, feature = "test-support"))]
+    LAUNCHED.lock().unwrap_or_else(|e| e.into_inner()).push(id.to_owned());
+    (super::port().launch_app)(id)
+}
+
+/// Could `id` name an installed app? The characters webOS app ids are made of, and a length no id
+/// reaches. It decides what Settings accepts and what a stored value may say; whether the app is
+/// installed is SAM's answer at the press.
+pub fn valid_app_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'+' | b'_'))
+}
+
+static EXIT_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Ask the run loop to end the process, for the viewer who chose that for a root press.
+pub fn request_exit() {
+    EXIT_REQUESTED.store(true, std::sync::atomic::Ordering::Release);
+}
+
+/// Has [`request_exit`] been called since the last time this answered `true`?
+pub fn take_exit() -> bool {
+    EXIT_REQUESTED.swap(false, std::sync::atomic::Ordering::AcqRel)
+}
+
 #[cfg(test)]
 mod go_home_tests {
     use super::*;
     use std::time::Instant;
+
+    #[test]
+    fn an_app_id_is_made_of_the_characters_webos_ids_use() {
+        for id in ["com.webos.app.home", "tld.my.nlauncher", "org.example.a-b_c+d", "Com.Mixed9"] {
+            assert!(valid_app_id(id), "{id}");
+        }
+        let long = "a".repeat(129);
+        for id in ["", " ", "com.app name", "a\"b", "a\\b", "a/b", "ком.приложение", long.as_str()] {
+            assert!(!valid_app_id(id), "{id}");
+        }
+    }
+
+    #[test]
+    fn an_exit_request_is_answered_once() {
+        let _g = nj_base::testlock::serial();
+        assert!(!take_exit());
+        request_exit();
+        assert!(take_exit());
+        assert!(!take_exit());
+    }
 
     /// **The expiry BOUNDARY, on a clock the test owns.** Driving it through [`take_root_press`]
     /// alone could only ever prove the suppressing half: clearing the latch to simulate time

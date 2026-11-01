@@ -39,3 +39,4 @@ pub(crate) mod player;
 pub(crate) mod registry;
 pub(crate) mod settings;
 pub(crate) mod preferences;
+pub(crate) mod root_back;
