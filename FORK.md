@@ -31,3 +31,9 @@ with `rust-src`; host tests also need `brew install sdl2_ttf`), then
 `/media/developer/apps/usr/palm/applications/com.sostk.nativejelly` (root ssh `lg-tv`) and
 restarted `sam`. Rollback points next to the app dir: `com.sostk.nativejelly.bak080` (upstream
 0.8.0), `com.sostk.nativejelly.bak090fork` (this fork before the playback fixes).
+
+Stable TV update (2026-11-01, CAMP-BG-598): GL teardown fix in `54c51457`, installed binary MD5
+`ab36145f5b9b5876057a6cfa4007955a`, `verify-deploy` 17/17. Three SAM close cycles exited with
+status 0 and no new SIGSEGV. Previous stable executable is `nativejelly.before-glfix` inside the
+app directory (MD5 `be07f0a4dc9225fbe5ab81f2b63bee18`). The separate nightly app and its storage
+service were uninstalled after stable acceptance; the local nightly test branch remains available.
