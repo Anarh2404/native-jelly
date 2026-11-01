@@ -264,6 +264,13 @@ unchanged shape (`tools/nativejelly-rec import`, `anchor: true` restored by hand
 fresh recordings diverged on replay by one to three frames at a timing-dependent frame; the one
 committed replayed SAME in Targets and Resolve on three consecutive runs.
 
+The *Back on Home* row (issue #29) moved recorded behaviour without moving the shape: the signed-out
+root is now Playback, Language, Back on Home, Privacy, Legal, About, so flow 6 starts with three DOWNs
+to reach Privacy, and the row's two strings entered the measurement table and the closed alphabet.
+The old recording was observed being REFUSED (`replay measurement table miss`, both modes, macOS
+Simulator CI), and the anchor was recorded afresh (`tools/nativejelly-rec import`, `anchor: true`
+restored by hand). The other two anchors stayed SAME untouched.
+
 The Settings-form keyed focus (`docs/settings-form.md` PR 2) changed the recorded STATE shape of
 the Settings root on purpose: focus elements, the surface's `remembered` seats and `RootState.sel`
 are now each row's `RowKey` (Playback 1, Language 4, Privacy 7, Legal 8, About 9) instead of its
