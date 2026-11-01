@@ -1367,6 +1367,7 @@ pub(crate) unsafe fn construct(
         ev,
         remote,
         win,
+        gl_context: ctx,
         #[cfg(all(feature = "hostsim", target_os = "linux"))]
         wslg_frame_pacing,
         t0,

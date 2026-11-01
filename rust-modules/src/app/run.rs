@@ -2834,7 +2834,8 @@ pub(crate) unsafe fn heartbeat(app: &mut App, fr: &mut Frame) {
 }
 
 /// Teardown after the loop: abandon the pending report, stop the feed, wait for the stop
-/// scrobble, close the capture stream and the poster workers, quit SDL.
+/// scrobble, close the capture stream and the poster workers. The caller drops GPU owners and
+/// deletes the GL context before quitting SDL.
 pub(crate) unsafe fn shutdown(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
@@ -2850,7 +2851,6 @@ pub(crate) unsafe fn shutdown(
     crate::route::drain_scrobble();
     crate::capture::shutdown();
     crate::app::adapters::poster::shutdown();
-    SDL_Quit();
 }
 
 /// Re-inject one recorded input (`app::recorder`'s encodings) for the frame being replayed: SDL

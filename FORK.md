@@ -20,6 +20,9 @@ Delta vs upstream (keep it that small):
 - `jf/playback.rs`: a conversion's video is predicted copied only when the stream's bitrate is
   known and within the URL's `VideoBitrate` (server `CanStreamCopyVideo`); otherwise the Load
   declared HEVC while the server sent H.264 and the player refused the stream.
+- `app/boot.rs` + `app/mod.rs` + `app/run.rs`: retain the boot GL context, stop workers, drop GPU
+  owners with that context current, then delete the context before `SDL_Quit`. On webOS 22 a live
+  EGL context/surface during SDL window teardown reproducibly faults inside Mali/Wayland.
 
 Build: `make setup-env` once (webosbrew NDK; also needs cmake, pkg-config, rust nightly
 with `rust-src`; host tests also need `brew install sdl2_ttf`), then
