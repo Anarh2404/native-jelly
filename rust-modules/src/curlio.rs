@@ -1643,8 +1643,9 @@ pub(crate) fn sample_throughput_result(
 
 /// [`sample_throughput_result`] for a resource that IS the sample — a server's own bitrate-test
 /// payload, sized by its URL. Asks for the whole body: such an endpoint answers a Range with a
-/// 200, which the ranged form must refuse as a server that ignores byte ranges. `settle` marks the
-/// body offset [`ThroughputSample::steady_kbps`] measures from.
+/// 200, which the ranged form must refuse as a server that ignores byte ranges. After headers,
+/// `setup_budget` also bounds waiting for the first body byte; only then does `body_budget` start.
+/// `settle` marks the body offset [`ThroughputSample::steady_kbps`] measures from.
 pub(crate) fn sample_whole_throughput_result(
     url: &str,
     target_bytes: usize,
@@ -1654,14 +1655,14 @@ pub(crate) fn sample_whole_throughput_result(
 ) -> Result<ThroughputSample, ThroughputFailure> {
     let setup_deadline = sample_setup_deadline(target_bytes, setup_budget, body_budget)?;
     let reservation = OpenReservation::private().ok_or(ThroughputFailure::Open(OpenErr::Local))?;
-    sample_throughput_with_reservation(url, target_bytes, Span::Whole, setup_deadline, body_budget, Some(settle), reservation)
+    sample_throughput_with_reservation(url, target_bytes, Span::Whole { first_byte_budget: setup_budget }, setup_deadline, body_budget, Some(settle), reservation)
 }
 
 /// Whether a throughput sample asks for its bytes as a finite Range or as the whole body.
 #[derive(Clone, Copy)]
 enum Span {
     Ranged,
-    Whole,
+    Whole { first_byte_budget: std::time::Duration },
 }
 
 /// The same finite measurement while it is the demux worker's current blocking operation.
@@ -1715,7 +1716,7 @@ fn sample_throughput_with_reservation(
         Span::Ranged => {
             CurlSource::open_bounded_with_reservation_until(url, target_bytes, reservation, Some(setup_deadline))
         }
-        Span::Whole => CurlSource::open_with_reservation_range_until(
+        Span::Whole { .. } => CurlSource::open_with_reservation_range_until(
             url,
             0,
             None,
@@ -1727,20 +1728,30 @@ fn sample_throughput_with_reservation(
     .map_err(ThroughputFailure::Open)?;
     // `start_range_until` disarms its setup-only total timeout after validating the headers.
     // `read_until` supplies the independently bounded body deadline from this point on.
-    let started = std::time::Instant::now();
-    let body_deadline = started
-        .checked_add(body_budget)
+    let mut started = std::time::Instant::now();
+    let mut waiting_for_first = matches!(span, Span::Whole { .. });
+    let mut body_deadline = started
+        .checked_add(match span {
+            Span::Whole { first_byte_budget } => first_byte_budget,
+            Span::Ranged => body_budget,
+        })
         .ok_or(ThroughputFailure::Open(OpenErr::Local))?;
     let mut bytes = 0usize;
     let mut last_read = 0;
     let mut settled = None;
     let mut chunk = [0u8; 64 * 1024];
     while bytes < target_bytes {
-        let want = chunk.len().min(target_bytes - bytes);
+        let want = if waiting_for_first { 1 } else { chunk.len().min(target_bytes - bytes) };
         let n = src.read_until(&mut chunk[..want], Some(body_deadline), &mut NoCheckpoint);
         last_read = n;
         if n <= 0 {
             break;
+        }
+        if waiting_for_first {
+            // A stalled first byte must not consume the short throughput window.
+            started = std::time::Instant::now();
+            body_deadline = started.checked_add(body_budget).ok_or(ThroughputFailure::Open(OpenErr::Local))?;
+            waiting_for_first = false;
         }
         bytes = bytes.saturating_add(n as usize);
         if settled.is_none() {
@@ -2704,6 +2715,40 @@ mod tests {
             sample.steady_kbps(),
             sample.kbps(),
         );
+    }
+
+    #[test]
+    fn a_whole_sample_waits_for_its_first_byte_before_measuring() {
+        let Some(_gate) = curl_gate() else { return };
+        let ms = std::time::Duration::from_millis;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.set_write_timeout(Some(std::time::Duration::from_secs(2))).unwrap();
+            let mut request = [0u8; 4096];
+            let _ = std::io::Read::read(&mut socket, &mut request);
+            write!(socket, "HTTP/1.1 200 OK\r\nContent-Length: 67108864\r\nConnection: close\r\n\r\n").unwrap();
+            std::thread::sleep(ms(800));
+            while socket.write_all(&[0x55; 64 * 1024]).is_ok() {
+                std::thread::sleep(ms(2));
+            }
+        });
+        let started = std::time::Instant::now();
+        let result = sample_whole_throughput_result(
+            &format!("http://127.0.0.1:{port}/Playback/BitrateTest"),
+            64 << 20,
+            std::time::Duration::from_secs(2),
+            ms(600),
+            ms(200),
+        );
+        let wall = started.elapsed();
+        server.join().unwrap();
+        let sample = result.expect("a first byte delayed beyond 600 ms must still yield a sample");
+        assert!(!sample.target_reached);
+        assert!(sample.settled.is_some_and(|(bytes, at)| bytes < sample.bytes && at < sample.elapsed));
+        assert!(sample.elapsed >= ms(500), "the body gets its full window: {sample:?}");
+        assert!(wall.saturating_sub(sample.elapsed) >= ms(700), "first-byte wait is not throughput time: {sample:?}, wall={wall:?}");
     }
 
     /// Runtime Original sampling runs synchronously on the demux worker.  If it used the cold
