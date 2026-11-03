@@ -2911,7 +2911,7 @@ pub(crate) unsafe fn heartbeat(app: &mut App, fr: &mut Frame) {
 /// How the process ends once [`shutdown`] has flushed everything.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Teardown {
-    /// SDL is quit and nothing native is running: drop the `App`, then `exit_now`.
+    /// Native workers are stopped: drop `App`, delete its GL context, quit SDL, then `exit_now`.
     Return,
     /// A native worker is still inside firmware, so no destructor may run under it and the display
     /// must stay up: the caller ends the process without dropping the `App`.
@@ -2927,8 +2927,8 @@ pub(crate) fn teardown_for(native_exit: crate::player::engine::NativeExit) -> Te
 }
 
 /// Teardown after the loop: abandon the pending report, stop the feed, wait for the stop
-/// scrobble, close the capture stream and the poster workers, quit SDL (unless a worker is still
-/// in firmware, which returns [`Teardown::ExitNow`]).
+/// scrobble, close the capture stream and the poster workers. The caller releases `App` and its
+/// GL context before quitting SDL, unless a worker remains in firmware ([`Teardown::ExitNow`]).
 pub(crate) unsafe fn shutdown(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
@@ -2952,7 +2952,7 @@ pub(crate) unsafe fn shutdown(
     crate::app::adapters::poster::shutdown();
     let teardown = teardown_for(native_exit);
     match teardown {
-        Teardown::Return => SDL_Quit(),
+        Teardown::Return => {},
         Teardown::ExitNow => {
             log("shutdown: a native worker is still inside firmware; SDL_Quit skipped, exiting without unwinding");
         }
@@ -3310,6 +3310,7 @@ mod lifecycle_regression_tests {
             ev: [0; 128],
             remote: Default::default(),
             win: Default::default(),
+            gl_context: Default::default(),
             #[cfg(target_os = "linux")]
             wslg_frame_pacing: false,
             t0: Default::default(),

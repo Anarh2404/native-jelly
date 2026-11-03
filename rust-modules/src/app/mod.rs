@@ -149,6 +149,7 @@ extern "C" {
         flags: u32,
     ) -> *mut c_void;
     fn SDL_GL_CreateContext(win: *mut c_void) -> *mut c_void;
+    fn SDL_GL_DeleteContext(ctx: *mut c_void);
     fn SDL_GL_SetSwapInterval(interval: c_int) -> c_int;
     fn SDL_Delay(ms: u32);
     fn SDL_PollEvent(event: *mut c_void) -> c_int;
@@ -297,6 +298,7 @@ pub(crate) struct App {
     remote: Option<crate::remote::Remote>,
     /// The SDL window (`SDL_CreateWindow`), for the swap.
     win: *mut c_void,
+    gl_context: *mut c_void,
     /// WSLg accepts swap interval 1 on X11/GLX without pacing the compositor. This boot-scoped
     /// flag enables the host-only software frame budget while leaving native Linux and macOS on
     /// their driver swap behavior.
@@ -492,14 +494,19 @@ fn pre_boot_diagnostics() -> crate::telemetry::native::Guard {
 /// The run+teardown sequence `run_application` hands the mounted `App` to, split out for the same
 /// reason as [`pre_boot_diagnostics`] (D4): `run_application` stays a ten-line skeleton naming only
 /// the THREE real phases (pre-boot diagnostics, `boot`, this), never the steps inside any one of them.
-unsafe fn run_and_shutdown(app: &mut App) -> c_int {
-    run::run(app);
+unsafe fn run_and_shutdown(mut app: App) -> c_int {
+    run::run(&mut app);
     let failed = finish_recording(&mut app.rec, app.bridge.landgate())
         || app.bridge.controlled_failure().is_some();
     app.glass.sources.borrow_mut().clear();
     let code = i32::from(failed);
     match run::shutdown(&mut app.player.session, &mut app.adapters.player) {
-        run::Teardown::Return => code,
+        run::Teardown::Return => {
+            let gl_context = app.gl_context;
+            // webOS 22 Mali faults if SDL destroys the native window before the EGL context/surface.
+            boot::finish_graphics(app, || SDL_GL_DeleteContext(gl_context), || SDL_Quit());
+            code
+        }
         run::Teardown::ExitNow => {
             // A worker is still inside firmware: returning would drop the `App`, which owns what
             // that worker may still read. `shutdown` has flushed the scrobble, capture and posters;
@@ -565,15 +572,13 @@ fn enter_application(pms_host: *const c_char, pms_port: c_int) -> Result<App,c_i
 /// The ten-line public skeleton: preflight/construction, then the ordinary loop and teardown.
 /// It never returns: every exit ends in [`nj_base::process::exit_now`], so the process never
 /// reaches libc `exit` and OpenSSL's atexit cleanup cannot run under a live curl worker. The `App`
-/// is dropped first, so everything its drop did before (the telemetry guard's flush included)
-/// still happens.
+/// is dropped with its GL context still current, before context/window teardown.
 pub(crate) fn run_application(pms_host: *const c_char, pms_port: c_int) -> ! {
-    let mut app = match enter_application(pms_host,pms_port) {
+    let app = match enter_application(pms_host,pms_port) {
         Ok(app) => app,
         Err(code) => nj_base::process::exit_now(code),
     };
-    let code = unsafe { run_and_shutdown(&mut app) };
-    drop(app);
+    let code = unsafe { run_and_shutdown(app) };
     nj_base::process::exit_now(code)
 }
 

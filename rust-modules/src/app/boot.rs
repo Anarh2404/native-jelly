@@ -111,8 +111,32 @@ pub(crate) fn install_plex_seams() {
     crate::catalog::session::install_account_clear_cleanup(crate::telemetry::cleanup_after_account_clear);
 }
 
+pub(super) fn finish_graphics<T>(owner: T, delete_context: impl FnOnce(), quit_sdl: impl FnOnce()) {
+    drop(owner);
+    delete_context();
+    quit_sdl();
+}
+
 #[cfg(test)]
 mod seam_order_tests {
+    #[test]
+    fn graphics_outlive_app_and_are_released_before_sdl() {
+        use std::cell::RefCell;
+        struct Owner<'a>(&'a RefCell<Vec<&'static str>>);
+        impl Drop for Owner<'_> {
+            fn drop(&mut self) {
+                self.0.borrow_mut().push("app");
+            }
+        }
+        let order = RefCell::new(Vec::new());
+        super::finish_graphics(
+            Owner(&order),
+            || order.borrow_mut().push("context"),
+            || order.borrow_mut().push("sdl"),
+        );
+        assert_eq!(*order.borrow(), ["app", "context", "sdl"]);
+    }
+
     /// **No exit of the app process returns into libc's `exit`** (upstream #1120). `exit` runs
     /// libcrypto's `OPENSSL_cleanup`, which frees and NULLs its global locks while detached curl
     /// workers may still be running; their next lock is `pthread_rwlock_*lock(NULL)`, a SIGSEGV
@@ -1424,6 +1448,7 @@ pub(crate) unsafe fn construct(
         ev,
         remote,
         win,
+        gl_context: ctx,
         #[cfg(all(feature = "hostsim", target_os = "linux"))]
         wslg_frame_pacing,
         t0,
